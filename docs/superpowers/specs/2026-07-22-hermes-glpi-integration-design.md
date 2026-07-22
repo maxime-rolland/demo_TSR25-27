@@ -87,12 +87,15 @@ Tools exposed (deliberately minimal — no delete, no rights/user management):
 | `add_solution` | `POST /Assistance/Ticket/{id}/Timeline/Solution` — `content` |
 | `search_kb` | `GET /Knowledgebase/Article` |
 | `create_kb_article` | `POST /Knowledgebase/Article` — `name`, `content`, `is_faq` |
+| `get_ticket_images` | `GET /Assistance/Ticket/{id}/Timeline/Document` (metadata) + `GET /Management/Document/{id}/Download` (bytes) for each `image/*` attachment, capped at the first 5 |
+
+**Image attachments (added after initial delivery, user-reported gap: "Hermes picks up tickets fine but doesn't look at screenshots/attached files").** `get_ticket_images` returns FastMCP `Image` objects (not JSON) — confirmed live that Hermes's native-mcp client (`tools/mcp_tool.py`) converts MCP `ImageContent` blocks into a `data:{mime};base64,{data}` vision message automatically, for any MCP tool's result, not just a dedicated vision tool. Only `image/*` mime types are downloaded and returned; other attachment types (PDF, Word, etc.) are out of scope for v1 and silently skipped. `GLPIClient.request()` gained a `raw=True` mode (returns `resp.content` bytes instead of calling `resp.json()`, which would crash on binary data) to support the download call.
 
 ### 5. Skill `glpi-ticket-triage`
 
 Loaded by the `glpi-ticket` webhook subscription. Encodes the decision policy:
 
-- **`event: "new"`** — search the KB for a matching answer.
+- **`event: "new"`** — call `get_ticket_images` first (always, regardless of whether the ticket text mentions an attachment) and factor in anything visible (error messages, codes, visual context) before deciding, then search the KB for a matching answer.
   - Confident match → `add_followup(is_private=false)`: a direct reply to the requester.
   - No confident match → `add_followup(is_private=true)`: an internal note (draft diagnosis / suggested next step) for a technician to review. No public-facing reply is sent in this case.
 - **`event: "update"` where the ticket's status just became "Solved"** — check `search_kb` for an existing article covering the same issue.

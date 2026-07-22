@@ -922,3 +922,207 @@ In GLPI, delete or close the design-time test tickets: `#1` (`[TEST hermes-bot] 
 - [ ] **Step 8: Final review**
 
 Read through the final `docker-compose.yml` end to end and confirm it matches every change made across Tasks 2, 4, and 5 (the `glpi-webhook-relay` service, the `hermes-glpi` volume mounts for the skill and MCP server directories, `extra_hosts` on `glpi-webhook-relay` rather than `glpi`). This project has no git repository (by the user's choice — see the design spec), so there is no commit checkpoint here; this read-through is the closing verification instead.
+
+---
+
+## Task 7: Ticket image attachments (post-delivery addition)
+
+User-reported gap after Task 6's verification: Hermes picks up tickets correctly but never looks at attached screenshots/documents. Added via a follow-up brainstorming round — see the design spec's Components section 4 ("Image attachments") for the full rationale, including the live-confirmed fact that Hermes's native-mcp client (`tools/mcp_tool.py`) converts any MCP tool's `ImageContent` result into a vision-model message automatically, not just from a dedicated vision tool.
+
+**Files:**
+- Modify: `glpi-integration/mcp-server/server.py`
+- Modify: `glpi-integration/mcp-server/test_server.py`
+- Modify: `glpi-integration/skills/glpi-ticket-triage/SKILL.md`
+
+**Interfaces:**
+- Consumes: `GLPIClient.request(method, path, **kwargs)` (existing, Task 5) — gains a new `raw: bool = False` keyword.
+- Produces: `get_ticket_images(ticket_id: int) -> list` (a new `@mcp.tool()`, registered by Hermes as `mcp__glpi__get_ticket_images`), returning `mcp.server.fastmcp.Image` objects for up to 5 `image/*`-mime-type documents linked to the ticket.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `glpi-integration/mcp-server/test_server.py` (append these classes — do not remove or modify the existing ones):
+
+```python
+class GLPIClientRawModeTests(unittest.TestCase):
+    def setUp(self):
+        self.client = server.GLPIClient()
+        self.client._access_token = "tok-1"
+        self.client._expires_at = server.time.time() + 3600
+
+    @patch("server.requests.request")
+    def test_raw_mode_returns_bytes_without_parsing_json(self, mock_request):
+        resp = MagicMock()
+        resp.content = b"\x89PNG raw bytes, not json"
+        resp.raise_for_status.return_value = None
+        mock_request.return_value = resp
+
+        result = self.client.request(
+            "GET", "/Management/Document/1/Download", raw=True
+        )
+
+        self.assertEqual(result, b"\x89PNG raw bytes, not json")
+        resp.json.assert_not_called()
+
+
+class GetTicketImagesTests(unittest.TestCase):
+    @patch.object(server.glpi, "request")
+    def test_filters_to_images_and_downloads_each(self, mock_request):
+        mock_request.side_effect = [
+            [
+                {"id": 10, "mime": "image/png", "filename": "screenshot.png"},
+                {"id": 11, "mime": "application/pdf", "filename": "manual.pdf"},
+                {"id": 12, "mime": "image/jpeg", "filename": "photo.jpg"},
+            ],
+            b"PNGDATA",
+            b"JPGDATA",
+        ]
+
+        images = server.get_ticket_images(42)
+
+        self.assertEqual(len(images), 2)
+        self.assertEqual(images[0].data, b"PNGDATA")
+        self.assertEqual(images[1].data, b"JPGDATA")
+        mock_request.assert_any_call(
+            "GET", "/Assistance/Ticket/42/Timeline/Document"
+        )
+        mock_request.assert_any_call(
+            "GET", "/Management/Document/10/Download", raw=True
+        )
+        mock_request.assert_any_call(
+            "GET", "/Management/Document/12/Download", raw=True
+        )
+
+    @patch.object(server.glpi, "request")
+    def test_caps_at_five_images(self, mock_request):
+        docs = [
+            {"id": i, "mime": "image/png", "filename": f"img{i}.png"}
+            for i in range(8)
+        ]
+        mock_request.side_effect = [docs] + [b"DATA"] * 8
+
+        images = server.get_ticket_images(42)
+
+        self.assertEqual(len(images), 5)
+
+    @patch.object(server.glpi, "request")
+    def test_no_documents_returns_empty_list(self, mock_request):
+        mock_request.return_value = []
+
+        images = server.get_ticket_images(42)
+
+        self.assertEqual(images, [])
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `docker exec -w /opt/glpi-mcp-server hermes-glpi python3 -B -m unittest test_server -v`
+Expected: FAIL — `TypeError: request() got an unexpected keyword argument 'raw'` (first new test) and `AttributeError: module 'server' has no attribute 'get_ticket_images'` (the rest), alongside the 8 pre-existing tests still passing.
+
+- [ ] **Step 3: Add `raw` mode to `GLPIClient.request`**
+
+In `glpi-integration/mcp-server/server.py`, replace the `request` method:
+
+```python
+    def request(self, method, path, raw=False, **kwargs):
+        self._ensure_token()
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {self._access_token}"
+        resp = requests.request(
+            method, f"{API_URL}{path}", headers=headers, timeout=15, **kwargs
+        )
+        resp.raise_for_status()
+        if raw:
+            return resp.content
+        if resp.content:
+            return resp.json()
+        return None
+```
+
+- [ ] **Step 4: Add the `get_ticket_images` tool**
+
+In `glpi-integration/mcp-server/server.py`, change the import line and add the new tool after `create_kb_article`:
+
+```python
+from mcp.server.fastmcp import FastMCP, Image
+```
+
+```python
+MAX_IMAGES_PER_TICKET = 5
+
+
+@mcp.tool()
+def get_ticket_images(ticket_id: int) -> list:
+    """Fetch image attachments (screenshots/photos) linked to a ticket, as
+    viewable images. Non-image documents (PDF, Word, etc.) are not
+    supported yet and are skipped. Capped at the first 5 image
+    attachments found on the ticket."""
+    docs = glpi.request("GET", f"/Assistance/Ticket/{ticket_id}/Timeline/Document")
+    images = []
+    for doc in docs:
+        mime = doc.get("mime") or ""
+        if not mime.startswith("image/"):
+            continue
+        data = glpi.request(
+            "GET", f"/Management/Document/{doc['id']}/Download", raw=True
+        )
+        images.append(Image(data=data, format=mime.split("/")[-1]))
+        if len(images) >= MAX_IMAGES_PER_TICKET:
+            break
+    return images
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `docker exec -w /opt/glpi-mcp-server hermes-glpi python3 -B -m unittest test_server -v`
+Expected: all 12 tests `ok` (the 8 from Task 5 plus these 4), ending in `OK`.
+
+- [ ] **Step 6: Restart Hermes and confirm the new tool is registered**
+
+Run: `docker compose restart hermes-glpi` (same reason as Task 5 Step 7 — no `docker-compose.yml` change here, so `up -d` would be a no-op).
+Run: `sleep 6 && docker exec hermes-glpi tail -n 5 /opt/data/logs/agent.log`
+Expected: `MCP server 'glpi' (stdio): registered 11 tool(s): ...mcp__glpi__get_ticket_images...` (was 10 before this task — the 6 original GLPI tools plus 4 FastMCP protocol tools; now 7 + 4).
+
+- [ ] **Step 7: Update the skill**
+
+In `glpi-integration/skills/glpi-ticket-triage/SKILL.md`, replace the `### event: "new"` section's numbered list:
+
+```markdown
+### `event: "new"`
+
+1. Read the ticket's `name` (title) and `content` (description) from the
+   payload.
+2. Call `mcp__glpi__get_ticket_images(ticket_id=<item.id>)` — always, even
+   if nothing in the ticket text mentions an attachment. If it returns any
+   images, look at them before continuing: an error message, a code, or
+   other visual context in a screenshot often matters more than the
+   ticket's own written description. Non-image attachments (PDF, Word,
+   etc.) are not supported yet and won't appear here.
+3. Call `mcp__glpi__search_kb` with an RSQL filter built from the ticket's
+   key terms, e.g. `name=like="*<keyword>*"`. If that returns nothing, also
+   try `content=like="*<keyword>*"`.
+4. Decide:
+   - **Confident match** — the KB article clearly answers this exact
+     request, not just a loosely related topic: reply directly with
+     `mcp__glpi__add_followup(ticket_id=<item.id>, content=<answer drawn
+     from the KB article>, is_private=False)`.
+   - **No confident match, or the request needs ticket-specific info**
+     (asset details, account access, something only a technician can
+     check): `mcp__glpi__add_followup(ticket_id=<item.id>, content=<your
+     diagnosis and a suggested next step for the technician>,
+     is_private=True)`. Do not guess a public reply in this case — an
+     internal note is always the safe default.
+5. Never call `mcp__glpi__add_solution` or otherwise resolve/close the
+   ticket in this step — only a human, or the resolution step below, does
+   that.
+```
+
+(This only renumbers and inserts step 2; steps 1 and what was 3-4 keep their existing wording, now as steps 1, 3, 4, 5.)
+
+- [ ] **Step 8: Verify the skill file update landed and re-read cleanly**
+
+Run: `docker exec hermes-glpi grep -c "get_ticket_images" /opt/data/skills/devops/glpi-ticket-triage/SKILL.md`
+Expected: `1` or more (confirms the bind-mounted file picked up the edit — no restart needed for skill content, but Step 6's restart already happened).
+
+- [ ] **Step 9: Live end-to-end verification (controller-run, not part of automated tests)**
+
+This step needs a ticket with a real image attached, which requires GLPI's document-upload flow (not yet exercised anywhere in this project) — hand this step to the controller rather than scripting it blind here. At minimum: create or reuse a ticket, attach an image to it (via the GLPI UI, or by working out the API upload flow live), trigger a "new" or "update" event, and confirm via `/opt/data/logs/agent.log` that `mcp__glpi__get_ticket_images` was called and returned at least one image, and that the resulting followup reflects something only visible in the image (not just the ticket's text).
