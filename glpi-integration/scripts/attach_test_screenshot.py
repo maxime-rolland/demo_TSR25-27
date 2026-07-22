@@ -24,6 +24,25 @@ CLIENT_SECRET = os.environ["GLPI_OAUTH_CLIENT_SECRET"]
 GLPI_USER = os.environ["GLPI_USER"]
 GLPI_PASSWORD = os.environ["GLPI_PASSWORD"]
 
+FABRICATED_ERROR_CODE = "J-9042"
+FABRICATED_MODEL = "Brother HL-L2350DW"
+
+
+def generate_test_image() -> bytes:
+    """A plain synthetic 'screenshot' containing a fabricated detail that
+    appears nowhere in the ticket's own text — the same verification
+    method already proven on ticket #5 (see design spec)."""
+    img = Image.new("RGB", (500, 220), color="white")
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([10, 10, 490, 210], outline="black", width=2)
+    draw.text((30, 40), "PRINTER ERROR", fill="red")
+    draw.text((30, 90), f"ERROR CODE: {FABRICATED_ERROR_CODE}", fill="black")
+    draw.text((30, 130), f"MODEL: {FABRICATED_MODEL}", fill="black")
+    draw.text((30, 170), "Fuser Unit Fault", fill="black")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
 
 def get_oauth_token() -> str:
     """Password-grant OAuth token, same flow as mcp-server/server.py."""
