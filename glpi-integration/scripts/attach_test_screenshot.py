@@ -153,5 +153,66 @@ def attach_document(
         )
 
 
+def verify_attachment(token: str, ticket_id: int) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    links_resp = requests.get(
+        f"{API_URL}/Assistance/Ticket/{ticket_id}/Timeline/Document",
+        headers=headers,
+        timeout=15,
+    )
+    links_resp.raise_for_status()
+    entries = links_resp.json()
+    if not entries:
+        raise RuntimeError(f"Ticket {ticket_id} has no linked document after attach")
+    document_id = entries[0]["item"]["documents_id"]
+
+    meta_resp = requests.get(
+        f"{API_URL}/Management/Document/{document_id}", headers=headers, timeout=15
+    )
+    meta_resp.raise_for_status()
+    mime = meta_resp.json().get("mime")
+
+    download_resp = requests.get(
+        f"{API_URL}/Management/Document/{document_id}/Download", headers=headers, timeout=15
+    )
+    download_resp.raise_for_status()
+
+    return {
+        "document_id": document_id,
+        "mime": mime,
+        "downloaded_bytes": len(download_resp.content),
+    }
+
+
+def main() -> None:
+    ticket_name = sys.argv[1] if len(sys.argv) > 1 else "[test] Souci imprimante, voir capture jointe"
+    ticket_content = (
+        sys.argv[2]
+        if len(sys.argv) > 2
+        else "Bonjour, j'ai un souci avec l'imprimante, j'ai mis une capture d'écran en pièce jointe."
+    )
+
+    token = get_oauth_token()
+    ticket_id = create_ticket(token, ticket_name, ticket_content)
+    print(f"Created ticket #{ticket_id}")
+
+    session, csrf_token = classic_login()
+    print(f"Logged in as {GLPI_USER}")
+
+    image_bytes = generate_test_image()
+    tmp_filename = upload_file(session, csrf_token, "test_screenshot.png", image_bytes, "image/png")
+    print(f"Uploaded to GLPI tmp storage as {tmp_filename}")
+
+    attach_document(session, csrf_token, tmp_filename, ticket_id, "Test screenshot")
+    print(f"Linked document to ticket #{ticket_id}")
+
+    result = verify_attachment(token, ticket_id)
+    print(
+        f"Verified: document #{result['document_id']}, mime={result['mime']}, "
+        f"{result['downloaded_bytes']} bytes downloaded"
+    )
+    print(f"\nDone. Ticket: {BASE_URL}/front/ticket.form.php?id={ticket_id}")
+
+
 if __name__ == "__main__":
-    pass
+    main()
