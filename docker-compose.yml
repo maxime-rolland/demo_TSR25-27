@@ -16,10 +16,22 @@ services:
       - GLPI_INSTALL_MODE=DOCKER
     ports:
       - "8080:80"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"   # so GLPI's webhooks can reach Hermes on the host
     depends_on:
       - db
+
+  glpi-webhook-relay:
+    image: python:3.13-alpine
+    container_name: glpi-webhook-relay
+    restart: unless-stopped
+    command: python3 /app/relay.py
+    volumes:
+      - ./glpi-integration/relay:/app:ro
+    environment:
+      - RELAY_LISTEN_PORT=8080
+      - RELAY_TARGET_URL=http://host.docker.internal:8644/webhooks/glpi-ticket
+      - RELAY_SECRET=2912cdd93de8bcbac1cd980584f7b370d771de0d3a92d3ba520802a945794e5e
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # so the relay can reach Hermes on the host
 
   db:
     image: mariadb:latest
