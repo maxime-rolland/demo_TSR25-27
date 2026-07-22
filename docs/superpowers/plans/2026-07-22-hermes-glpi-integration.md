@@ -1126,3 +1126,363 @@ Expected: `1` or more (confirms the bind-mounted file picked up the edit — no 
 - [ ] **Step 9: Live end-to-end verification (controller-run, not part of automated tests)**
 
 This step needs a ticket with a real image attached, which requires GLPI's document-upload flow (not yet exercised anywhere in this project) — hand this step to the controller rather than scripting it blind here. At minimum: create or reuse a ticket, attach an image to it (via the GLPI UI, or by working out the API upload flow live), trigger a "new" or "update" event, and confirm via `/opt/data/logs/agent.log` that `mcp__glpi__get_ticket_images` was called and returned at least one image, and that the resulting followup reflects something only visible in the image (not just the ticket's text).
+
+---
+
+## Task 8: Self-assignment and escalation (post-delivery addition)
+
+User-reported requirement: "j'ai également besoin que si le bot répond par lui-même au ticket, qui se l'assigne, j'ai besoin qu'il soit en capacité d'escalader si ça devient nécessaire." Added via a follow-up brainstorming round — see the design spec's Components section 4 (new tool rows + the "Assignment / escalation" note) and Security/guardrails section (the `Ticket::ASSIGN` right) for the full rationale.
+
+**Already verified live before writing this task (do not re-derive):**
+- `hermes-bot` lacked `Ticket::ASSIGN` (bit `8192` on the `ticket` row in `glpi_profilerights`) — confirmed via a 403 on `POST /Assistance/Ticket/{id}/TeamMember`, even for self-assignment. **Already granted**: `UPDATE glpi_profilerights SET rights = rights | 8192 WHERE profiles_id=6 AND name='ticket'` — re-verify with `SELECT rights FROM glpi_profilerights WHERE profiles_id=6 AND name='ticket';` should show `437255`, not `429063`, if you need to confirm this task's prerequisite is still in place.
+- `POST /Assistance/Ticket/{id}/TeamMember` body shape: `{"type": "User", "id": <numeric user id>, "role": "assigned"}` (confirmed working live: both self-assignment and assigning a second user succeed, both appear as separate entries in the ticket's `team` array).
+- `GET /Assistance/Ticket/{id}/Timeline/Followup` uses the same timeline-wrapper shape already discovered for `Timeline/Document` in Task 7's bug fix: `[{"type": "Followup", "item": {"content": ..., "is_private": ..., "date": ..., "user": {"id": ..., "name": ...}, ...}}]` — **not** a flat array of Followup objects.
+- `GET /Administration/User` (no filter, full list) returns entries with a `username` field (e.g. `{"id": 7, "username": "hermes-bot", ...}`) — the RSQL `filter` param does not reliably narrow this endpoint by username (confirmed during Task 5's design), so username-to-id resolution must filter the full list client-side.
+
+**Files:**
+- Modify: `glpi-integration/mcp-server/server.py`
+- Modify: `glpi-integration/mcp-server/test_server.py`
+- Modify: `glpi-integration/skills/glpi-ticket-triage/SKILL.md`
+- Modify: `docker-compose.yml`
+
+**Interfaces:**
+- Consumes: `GLPIClient.request(method, path, **kwargs)` (existing).
+- Produces: `GLPIClient.resolve_user_id(username: str) -> int` (new method, cached); three new `@mcp.tool()` functions registered by Hermes as `mcp__glpi__get_ticket_followups`, `mcp__glpi__assign_self`, `mcp__glpi__escalate_ticket`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Add to `glpi-integration/mcp-server/test_server.py` (append — do not remove or modify any existing test class):
+
+```python
+class ResolveUserIdTests(unittest.TestCase):
+    @patch.object(server.glpi, "request")
+    def test_resolves_and_caches(self, mock_request):
+        mock_request.return_value = [
+            {"id": 4, "username": "tech"},
+            {"id": 7, "username": "hermes-bot"},
+        ]
+        client = server.GLPIClient()
+
+        user_id = client.resolve_user_id("hermes-bot")
+        user_id_again = client.resolve_user_id("hermes-bot")
+
+        self.assertEqual(user_id, 7)
+        self.assertEqual(user_id_again, 7)
+        mock_request.assert_called_once_with("GET", "/Administration/User")
+
+    @patch.object(server.glpi, "request")
+    def test_raises_for_unknown_username(self, mock_request):
+        mock_request.return_value = [{"id": 4, "username": "tech"}]
+        client = server.GLPIClient()
+
+        with self.assertRaises(ValueError):
+            client.resolve_user_id("does-not-exist")
+
+
+def _timeline_followup(content, is_private, author_name):
+    """Shape of one entry from GET .../Timeline/Followup -- the same
+    timeline-wrapper pattern already confirmed live for Timeline/Document
+    in Task 7 (see that fix's commit message), not a flat object."""
+    return {
+        "type": "Followup",
+        "item": {
+            "content": content,
+            "is_private": is_private,
+            "date": "2026-07-22T12:00:00+00:00",
+            "user": {"id": 1, "name": author_name},
+        },
+    }
+
+
+class GetTicketFollowupsTests(unittest.TestCase):
+    @patch.object(server.glpi, "request")
+    def test_simplifies_timeline_wrapper_shape(self, mock_request):
+        mock_request.return_value = [
+            _timeline_followup("Bonjour", False, "hermes-bot"),
+            _timeline_followup("Merci !", False, "ivan"),
+        ]
+
+        followups = server.get_ticket_followups(9)
+
+        self.assertEqual(len(followups), 2)
+        self.assertEqual(
+            followups[0],
+            {
+                "content": "Bonjour",
+                "is_private": False,
+                "date": "2026-07-22T12:00:00+00:00",
+                "author_name": "hermes-bot",
+            },
+        )
+        self.assertEqual(followups[1]["author_name"], "ivan")
+
+    @patch.object(server.glpi, "request")
+    def test_no_followups_returns_empty_list(self, mock_request):
+        mock_request.return_value = None
+        self.assertEqual(server.get_ticket_followups(9), [])
+
+
+class AssignSelfTests(unittest.TestCase):
+    @patch.object(server.glpi, "resolve_user_id")
+    @patch.object(server.glpi, "request")
+    def test_assigns_resolved_self_id(self, mock_request, mock_resolve):
+        mock_resolve.return_value = 7
+        mock_request.return_value = {"id": 1, "href": "/Assistance/Ticket/9/TeamMember/1"}
+
+        result = server.assign_self(9)
+
+        mock_resolve.assert_called_once_with(server.GLPI_USER)
+        mock_request.assert_called_once_with(
+            "POST",
+            "/Assistance/Ticket/9/TeamMember",
+            json={"type": "User", "id": 7, "role": "assigned"},
+        )
+        self.assertEqual(result, {"id": 1, "href": "/Assistance/Ticket/9/TeamMember/1"})
+
+
+class EscalateTicketTests(unittest.TestCase):
+    @patch.object(server.glpi, "resolve_user_id")
+    @patch.object(server.glpi, "request")
+    def test_assigns_escalation_user_and_posts_private_reason(
+        self, mock_request, mock_resolve
+    ):
+        mock_resolve.return_value = 4
+        mock_request.side_effect = [
+            {"id": 1, "href": "/Assistance/Ticket/9/TeamMember/1"},
+            {"id": 2, "href": "/Assistance/Ticket/9/Timeline/Followup/2"},
+        ]
+
+        result = server.escalate_ticket(
+            9, "Le client dit que ca ne marche toujours pas."
+        )
+
+        mock_resolve.assert_called_once_with(server.ESCALATION_USER)
+        mock_request.assert_any_call(
+            "POST",
+            "/Assistance/Ticket/9/TeamMember",
+            json={"type": "User", "id": 4, "role": "assigned"},
+        )
+        mock_request.assert_any_call(
+            "POST",
+            "/Assistance/Ticket/9/Timeline/Followup",
+            json={
+                "content": "Le client dit que ca ne marche toujours pas.",
+                "is_private": True,
+            },
+        )
+        self.assertEqual(result, {"id": 1, "href": "/Assistance/Ticket/9/TeamMember/1"})
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `docker exec -w /opt/glpi-mcp-server hermes-glpi python3 -B -m unittest test_server -v`
+Expected: FAIL — `AttributeError: 'GLPIClient' object has no attribute 'resolve_user_id'` (and similar for the three new tool functions not existing yet), alongside the 14 pre-existing tests still passing.
+
+- [ ] **Step 3: Add `resolve_user_id` to `GLPIClient`**
+
+In `glpi-integration/mcp-server/server.py`, add a cache dict to `__init__` and a new method (place the method anywhere inside the `GLPIClient` class, e.g. right after `request`):
+
+```python
+    def __init__(self):
+        self._access_token = None
+        self._refresh_token = None
+        self._expires_at = 0.0
+        self._user_id_cache = {}
+```
+
+```python
+    def resolve_user_id(self, username):
+        if username in self._user_id_cache:
+            return self._user_id_cache[username]
+        users = self.request("GET", "/Administration/User") or []
+        for user in users:
+            if user.get("username") == username:
+                self._user_id_cache[username] = user["id"]
+                return user["id"]
+        raise ValueError(f"No GLPI user found with username {username!r}")
+```
+
+- [ ] **Step 4: Add the escalation-target env var and the three new tools**
+
+In `glpi-integration/mcp-server/server.py`, add near the other `os.environ[...]` reads at the top:
+
+```python
+ESCALATION_USER = os.environ["GLPI_ESCALATION_USER"]
+```
+
+Then add these three tools after `get_ticket_images`:
+
+```python
+@mcp.tool()
+def get_ticket_followups(ticket_id: int) -> list:
+    """List the followups (replies/notes) on a ticket, in the order GLPI
+    returns them, as {content, is_private, date, author_name} -- use this
+    to see who wrote the most recent message on a ticket and what they
+    said."""
+    entries = glpi.request(
+        "GET", f"/Assistance/Ticket/{ticket_id}/Timeline/Followup"
+    ) or []
+    return [
+        {
+            "content": e["item"]["content"],
+            "is_private": e["item"]["is_private"],
+            "date": e["item"]["date"],
+            "author_name": (e["item"].get("user") or {}).get("name"),
+        }
+        for e in entries
+    ]
+
+
+@mcp.tool()
+def assign_self(ticket_id: int) -> dict:
+    """Assign hermes-bot itself to a ticket, taking visible ownership of
+    it. Use this when replying with a confident, resolving answer."""
+    user_id = glpi.resolve_user_id(GLPI_USER)
+    return glpi.request(
+        "POST",
+        f"/Assistance/Ticket/{ticket_id}/TeamMember",
+        json={"type": "User", "id": user_id, "role": "assigned"},
+    )
+
+
+@mcp.tool()
+def escalate_ticket(ticket_id: int, reason: str) -> dict:
+    """Hand a ticket off to a human technician: assign the configured
+    escalation user and leave an internal note explaining why. Use this
+    whenever the ticket needs human judgment instead of another guess."""
+    user_id = glpi.resolve_user_id(ESCALATION_USER)
+    assignment = glpi.request(
+        "POST",
+        f"/Assistance/Ticket/{ticket_id}/TeamMember",
+        json={"type": "User", "id": user_id, "role": "assigned"},
+    )
+    glpi.request(
+        "POST",
+        f"/Assistance/Ticket/{ticket_id}/Timeline/Followup",
+        json={"content": reason, "is_private": True},
+    )
+    return assignment
+```
+
+- [ ] **Step 5: Run the tests to verify they pass**
+
+Run: `docker exec -w /opt/glpi-mcp-server hermes-glpi python3 -B -m unittest test_server -v`
+Expected: all 20 tests `ok` (the 14 from before plus these 6), ending in `OK`.
+
+- [ ] **Step 6: Add `GLPI_ESCALATION_USER` to `docker-compose.yml`**
+
+Under the `hermes-glpi` service's `environment:` list (not `.env` — this is a plain username, not a secret), add:
+
+```yaml
+      - GLPI_ESCALATION_USER=tech
+```
+
+Run: `docker compose restart hermes-glpi` (no `docker-compose.yml`-triggered recreate needed for an `environment:` value that's already templated the same way as the others — but restart regardless since this env var is new; if `docker compose restart` doesn't pick up the new variable, use `docker compose up -d hermes-glpi` instead, which will recreate the container).
+Run: `docker exec hermes-glpi sh -c 'echo $GLPI_ESCALATION_USER'`
+Expected: `tech`.
+
+- [ ] **Step 7: Confirm the three new tools are registered**
+
+Run: `sleep 6 && docker exec hermes-glpi tail -n 5 /opt/data/logs/agent.log`
+Expected: `MCP server 'glpi' (stdio): registered N tool(s): ...mcp__glpi__get_ticket_followups...mcp__glpi__assign_self...mcp__glpi__escalate_ticket...` (was 11 before this task — 7 GLPI tools + 4 FastMCP protocol tools; now 10 + 4 = 14).
+
+- [ ] **Step 8: Update the skill**
+
+In `glpi-integration/skills/glpi-ticket-triage/SKILL.md`, make three edits.
+
+First, in the `### event: "new"` section's step 4, replace the two bullet points:
+
+```markdown
+   - **Confident match** — the KB article clearly answers this exact
+     request, not just a loosely related topic: reply directly with
+     `mcp__glpi__add_followup(ticket_id=<item.id>, content=<answer drawn
+     from the KB article>, is_private=False)`, **and then also** call
+     `mcp__glpi__add_solution(ticket_id=<item.id>, content=<the same
+     answer>)` — the same confidence bar that justifies a public reply
+     also justifies auto-resolving the ticket. `add_solution` moves the
+     ticket to GLPI's "Solved" status, not an irreversible "Closed" one —
+     the requester can still reopen it if the answer didn't actually fix
+     things, so this is a safe default, not a one-way door. Calling it
+     will itself queue a fresh `update` event for a later run — that's
+     expected, see the branch below. **Finally, call
+     `mcp__glpi__assign_self(ticket_id=<item.id>)`** — if you're
+     confident enough to answer and resolve on your own, take visible
+     ownership of the ticket too.
+   - **No confident match, or the request needs ticket-specific info**
+     (asset details, account access, something only a technician can
+     check): `mcp__glpi__add_followup(ticket_id=<item.id>, content=<your
+     diagnosis and a suggested next step for the technician>,
+     is_private=True)`, **and then** call
+     `mcp__glpi__escalate_ticket(ticket_id=<item.id>, reason=<the same
+     diagnosis>)` — hand the ticket to a human instead of leaving an
+     unassigned note nobody might notice. Do not guess a public reply in
+     this case — an internal note plus escalation is always the safe
+     default. **Never call `mcp__glpi__add_solution` here** — only a
+     confident public reply (above) or a human ever resolves a ticket.
+```
+
+Second, immediately after the existing `### event: "update"` section for the Solved-status branch (i.e. after its numbered list, before the `## Guardrails` heading), insert a whole new section:
+
+```markdown
+### `event: "update"` where the status is anything else, and the bot is already assigned
+
+Check `item.team` in the payload for an entry with `role: "assigned"` and
+`name: "hermes-bot"`. If there is no such entry, this update doesn't
+concern you at all -- do nothing, regardless of what else changed.
+
+If there is one, call `mcp__glpi__get_ticket_followups(ticket_id=<item.id>)`
+and look at the single most recent entry (the last one in the list):
+
+1. Authored by `hermes-bot` itself -- do nothing. This update was only a
+   side effect of your own prior action (posting a followup or solution
+   touches the ticket); reacting to it would create a loop.
+2. Authored by anyone else who is not this ticket's original requester
+   (`item.team`'s `role: "requester"` entry) -- e.g. a technician like
+   `tech` already working an escalation -- do nothing. Never interfere
+   with a human already engaged on a ticket.
+3. Authored by the original requester -- read what they wrote:
+   - Confirms the problem is fixed, or a simple thank-you -- call
+     `mcp__glpi__add_solution(ticket_id=<item.id>, content=<a short
+     close-out message>)`. This cascades into the KB-capitalization
+     branch above on a later run, same as any other resolution.
+   - Says it's still broken, got worse, or raises something new -- call
+     `mcp__glpi__escalate_ticket(ticket_id=<item.id>, reason=<quote what
+     the requester said>)`.
+   - Ambiguous -- escalate. Same "default to human involvement when
+     uncertain" principle as the initial triage decision.
+```
+
+Third, in the `## Guardrails` section, replace the existing bullet list with:
+
+```markdown
+- The only write actions that are ever appropriate here are `add_followup`,
+  `add_solution` (only alongside a confident public `add_followup`, never
+  alone and never for a private/internal note), `create_kb_article`,
+  `assign_self` (only alongside a confident, resolving `add_followup`), and
+  `escalate_ticket` (only when explicitly deciding to hand off to a human --
+  never as a substitute for a real diagnosis) (plus
+  `search_kb`/`search_tickets`/`get_ticket`/`get_ticket_images`/
+  `get_ticket_followups` for reads). Never attempt to delete a ticket, or
+  touch user/rights data — the `glpi` MCP server does not expose those
+  actions, and the underlying GLPI account does not have the rights for
+  them either. `escalate_ticket` only ever assigns the one pre-configured
+  escalation user -- there is no tool for assigning an arbitrary person or
+  group.
+- When unsure whether a match is confident enough for a public reply,
+  default to a private/internal followup instead. A wrong technician-facing
+  note is easy to correct; a wrong public reply — or a ticket auto-resolved
+  on a wrong answer — reaches the requester directly.
+```
+
+- [ ] **Step 9: Verify the skill file update landed**
+
+Run: `docker exec hermes-glpi grep -c "escalate_ticket" /opt/data/skills/devops/glpi-ticket-triage/SKILL.md`
+Expected: `1` or more (confirms the bind-mounted file picked up the edit).
+
+- [ ] **Step 10: Live end-to-end verification (controller-run, not part of automated tests)**
+
+Three scenarios need a live check, each requiring simulating multi-step ticket conversations that don't fit a scripted assertion here -- hand this to the controller:
+
+1. **Confident match still self-assigns.** Create a ticket that confidently matches an existing KB article (as already done for Task 6/the auto-resolve feature). Confirm via `agent.log` that `mcp__glpi__assign_self` was called, and via the GLPI API/DB that the ticket's `team` now includes `{"role": "assigned", "name": "hermes-bot"}`.
+2. **No match escalates immediately.** Create a ticket with content that has no matching KB article. Confirm `mcp__glpi__escalate_ticket` was called (not just a private followup), and that the ticket's `team` includes `{"role": "assigned", "name": "tech"}` plus a private followup explaining why.
+3. **Follow-up from the requester triggers the new update branch.** On a ticket the bot already resolved (self-assigned + Solved) or escalated (assigned to `tech`), post a followup as if from the original requester (via the API, using `hermes-bot`'s credentials is fine for the test -- the *content* is what the skill reasons about, not who technically posted it) saying the problem is NOT fixed. Confirm the resulting `update` event triggers `escalate_ticket` rather than being ignored, and that it is NOT re-triggered by the escalation's own follow-up actions (no infinite loop -- check `agent.log` for repeated firings on the same ticket beyond the expected one).
