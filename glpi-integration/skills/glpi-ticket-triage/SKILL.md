@@ -12,7 +12,7 @@ metadata:
 
 Loaded for every run triggered by the `glpi-ticket` webhook subscription. The
 webhook payload is a GLPI Ticket event: `{"item": {...ticket...}, "event":
-"new"|"update"}`. Use the `mcp_glpi_*` tools (from the `glpi` MCP server) for
+"new"|"update"}`. Use the `mcp__glpi__*` tools (from the `glpi` MCP server) for
 every action on GLPI — never call the GLPI REST API directly.
 
 ## Decision policy
@@ -21,21 +21,21 @@ every action on GLPI — never call the GLPI REST API directly.
 
 1. Read the ticket's `name` (title) and `content` (description) from the
    payload.
-2. Call `mcp_glpi_search_kb` with an RSQL filter built from the ticket's key
+2. Call `mcp__glpi__search_kb` with an RSQL filter built from the ticket's key
    terms, e.g. `name=like="*<keyword>*"`. If that returns nothing, also try
    `content=like="*<keyword>*"`.
 3. Decide:
    - **Confident match** — the KB article clearly answers this exact
      request, not just a loosely related topic: reply directly with
-     `mcp_glpi_add_followup(ticket_id=<item.id>, content=<answer drawn from
+     `mcp__glpi__add_followup(ticket_id=<item.id>, content=<answer drawn from
      the KB article>, is_private=False)`.
    - **No confident match, or the request needs ticket-specific info** (asset
      details, account access, something only a technician can check):
-     `mcp_glpi_add_followup(ticket_id=<item.id>, content=<your diagnosis and
+     `mcp__glpi__add_followup(ticket_id=<item.id>, content=<your diagnosis and
      a suggested next step for the technician>, is_private=True)`. Do not
      guess a public reply in this case — an internal note is always the safe
      default.
-4. Never call `mcp_glpi_add_solution` or otherwise resolve/close the ticket
+4. Never call `mcp__glpi__add_solution` or otherwise resolve/close the ticket
    in this step — only a human, or the resolution step below, does that.
 
 ### `event: "update"` where the ticket's status just changed to "Solved"
@@ -44,10 +44,10 @@ The payload's `item.status.name` is `"Solved"` (or the equivalent in GLPI's
 configured language) when this applies. Skip this branch entirely for any
 other status value.
 
-1. Call `mcp_glpi_search_kb` using the ticket's title/content, same as above.
+1. Call `mcp__glpi__search_kb` using the ticket's title/content, same as above.
 2. If a clearly-matching article already exists: do nothing (avoid duplicate
    KB entries).
-3. If none exists: call `mcp_glpi_create_kb_article` with:
+3. If none exists: call `mcp__glpi__create_kb_article` with:
    - `name`: a short, reusable title for the underlying issue — generalize
      it rather than copying the ticket's own title verbatim if it is too
      specific or personal (e.g. "Ticket #123: mon imprimante ne marche pas"

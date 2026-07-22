@@ -853,9 +853,12 @@ Expected: `done`.
 
 - [ ] **Step 7: Restart Hermes and confirm the tools are registered**
 
-Run: `docker compose up -d hermes-glpi`
-Run: `sleep 5 && docker logs hermes-glpi --tail 100 2>&1 | grep -i "mcp"`
-Expected: a log line confirming the `glpi` MCP server connected and its 6 tools were registered (look for `mcp_glpi_search_tickets`, `mcp_glpi_get_ticket`, `mcp_glpi_add_followup`, `mcp_glpi_add_solution`, `mcp_glpi_search_kb`, `mcp_glpi_create_kb_article` in the output — or an equivalent "registered N tools from server glpi" summary line). If nothing appears, re-check with `docker logs hermes-glpi --tail 200 2>&1 | grep -iE "mcp|glpi"` for a connection error and fix before continuing.
+Run: `docker compose restart hermes-glpi` (note: `docker compose up -d` is a no-op here — only the container's bind-mounted `config.yaml` changed in Step 6, not `docker-compose.yml`, so nothing tells Compose to recreate the container; `restart` is what actually reloads the process).
+
+Hermes routes these logs to files under `/opt/data/logs/`, not to the container's captured stdout/stderr — `docker logs` won't show them.
+
+Run: `sleep 6 && docker exec hermes-glpi tail -n 5 /opt/data/logs/agent.log`
+Expected: a line like `MCP server 'glpi' (stdio): registered N tool(s): mcp__glpi__search_tickets, mcp__glpi__get_ticket, mcp__glpi__add_followup, mcp__glpi__add_solution, mcp__glpi__search_kb, mcp__glpi__create_kb_article, ...`. Note the tool names use **double** underscores (`mcp__glpi__<tool>`), not single (`mcp_glpi_<tool>`) — the native-mcp skill's own docs describe the convention with single underscores, but this is what Hermes actually registers; the `glpi-ticket-triage` skill (Task 4) has already been corrected to use the double-underscore names. `N` may be higher than 6 — FastMCP automatically adds 4 generic protocol tools (`list_resources`, `read_resource`, `list_prompts`, `get_prompt`) to every server; that's expected, not a sign `server.py` defined extra GLPI actions. If nothing appears, check `/opt/data/logs/mcp-stderr.log` for a connection error and fix before continuing.
 
 
 ---
@@ -878,14 +881,16 @@ Expected: a log line for the incoming POST (no Python traceback).
 
 - [ ] **Step 3: Confirm Hermes ran the triage skill**
 
-Run: `docker logs hermes-glpi --tail 50 2>&1 | grep -i "glpi-ticket"`
+Hermes routes these logs to files under `/opt/data/logs/`, not to `docker logs` (see the note in Task 5 Step 7).
+
+Run: `docker exec hermes-glpi grep -i "glpi-ticket" /opt/data/logs/gateway.log | tail -10`
 Expected: a line showing the `glpi-ticket` webhook route fired and triggered an agent run.
 
 - [ ] **Step 4: Confirm the followup landed on the ticket**
 
 In GLPI, open the test ticket from Step 1 and check its timeline for a new followup (public or private, per the skill's decision).
 
-If nothing appears after ~2 minutes, check in order: `docker logs hermes-glpi --tail 200 2>&1 | grep -iE "error|glpi-ticket|mcp_glpi"` (agent/tool errors), then `docker exec glpi_docker_dev-db-1 mariadb -uglpi -pglpi glpi -e "SELECT id,sent_try,sent_time FROM glpi_queuedwebhooks ORDER BY id DESC LIMIT 3;"` (did GLPI even attempt delivery).
+If nothing appears after ~2 minutes, check in order: `docker exec hermes-glpi grep -iE "error|glpi-ticket" /opt/data/logs/agent.log /opt/data/logs/gateway.log /opt/data/logs/errors.log` (agent/tool errors), then `docker exec glpi_docker_dev-db-1 mariadb -uglpi -pglpi glpi -e "SELECT id,sent_try,sent_time FROM glpi_queuedwebhooks ORDER BY id DESC LIMIT 3;"` (did GLPI even attempt delivery).
 
 - [ ] **Step 5: Verify the resolution → KB path**
 
