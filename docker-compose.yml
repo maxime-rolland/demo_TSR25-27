@@ -26,8 +26,6 @@ services:
     command: python3 /app/relay.py
     volumes:
       - ./glpi-integration/relay:/app:ro
-    env_file:
-      - .env
     environment:
       # Port 80, not 8080: GLPI's outbound-webhook SSRF allowlist regex
       # (Toolbox::isUrlSafe) has no port-matching group at all, so any
@@ -36,6 +34,11 @@ services:
       # the default HTTP port keeps the target URL port-free.
       - RELAY_LISTEN_PORT=80
       - RELAY_TARGET_URL=http://host.docker.internal:8644/webhooks/glpi-ticket
+      # Deliberately NOT `env_file: .env` here (that would also inject
+      # GLPI_OAUTH_CLIENT_SECRET/GLPI_PASSWORD into this container, which
+      # never uses them) -- only the one var this component needs, pulled
+      # in via Compose's own top-level .env substitution.
+      - RELAY_SECRET=${RELAY_SECRET}
     extra_hosts:
       - "host.docker.internal:host-gateway"   # so the relay can reach Hermes on the host
 
