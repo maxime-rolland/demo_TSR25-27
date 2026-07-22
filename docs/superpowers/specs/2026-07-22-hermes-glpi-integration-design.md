@@ -98,9 +98,9 @@ The initial implementation assumed `Timeline/Document` returns the flat `Documen
 Loaded by the `glpi-ticket` webhook subscription. Encodes the decision policy:
 
 - **`event: "new"`** — call `get_ticket_images` first (always, regardless of whether the ticket text mentions an attachment) and factor in anything visible (error messages, codes, visual context) before deciding, then search the KB for a matching answer.
-  - Confident match → `add_followup(is_private=false)`: a direct reply to the requester.
-  - No confident match → `add_followup(is_private=true)`: an internal note (draft diagnosis / suggested next step) for a technician to review. No public-facing reply is sent in this case.
-- **`event: "update"` where the ticket's status just became "Solved"** — check `search_kb` for an existing article covering the same issue.
+  - Confident match → `add_followup(is_private=false)`: a direct reply to the requester, **and** `add_solution` with the same content — the same confidence bar now also auto-resolves the ticket (added after initial delivery, user request: "j'aimerais que le bot puisse automatiquement solutionner les tickets lorsque tout est ok"). `add_solution` moves the ticket to GLPI's "Solved" status, not an irreversible "Closed" — the requester can still reopen/reject it, so this isn't a one-way door. No new tool or infrastructure needed: `add_solution` already existed (Task 5) and was simply never permitted in this branch before.
+  - No confident match → `add_followup(is_private=true)`: an internal note (draft diagnosis / suggested next step) for a technician to review. No public-facing reply is sent, and the ticket is never auto-resolved, in this case.
+- **`event: "update"` where the ticket's status just became "Solved"** — check `search_kb` for an existing article covering the same issue. This branch now also fires as a natural side effect of the auto-resolution above (calling `add_solution` changes the ticket, which queues a fresh GLPI `update` webhook for the *next* cron pass) — by design, not a new mechanism: it finds the already-existing matching article and does nothing, avoiding a duplicate.
   - None found → draft and `create_kb_article` from the ticket's content + solution.
   - One found → do nothing (avoid duplicate KB entries).
 
