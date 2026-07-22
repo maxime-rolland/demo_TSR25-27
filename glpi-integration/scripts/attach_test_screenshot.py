@@ -54,5 +54,34 @@ def create_ticket(token: str, name: str, content: str) -> int:
     return resp.json()["id"]
 
 
+def classic_login() -> tuple[requests.Session, str]:
+    """Log in via GLPI's classic (non-OAuth) form, for the one operation
+    (file upload) the OAuth REST API cannot do."""
+    session = requests.Session()
+    login_page = session.get(f"{BASE_URL}/index.php", timeout=15)
+    login_page.raise_for_status()
+    csrf_match = re.search(r'_glpi_csrf_token"\s*value="([^"]*)"', login_page.text)
+    if not csrf_match:
+        raise RuntimeError("Could not find CSRF token on GLPI login page")
+
+    resp = session.post(
+        f"{BASE_URL}/front/login.php",
+        data={
+            "_glpi_csrf_token": csrf_match.group(1),
+            "login_name": GLPI_USER,
+            "login_password": GLPI_PASSWORD,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    if "central.php" not in resp.url:
+        raise RuntimeError(f"GLPI login failed, landed on {resp.url} instead of central.php")
+
+    fresh_csrf_match = re.search(r'_glpi_csrf_token"\s*value="([^"]*)"', resp.text)
+    if not fresh_csrf_match:
+        raise RuntimeError("Could not find CSRF token on post-login page")
+    return session, fresh_csrf_match.group(1)
+
+
 if __name__ == "__main__":
     pass
