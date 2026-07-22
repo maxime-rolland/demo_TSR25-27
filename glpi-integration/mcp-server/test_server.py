@@ -230,6 +230,25 @@ class GetTicketImagesTests(unittest.TestCase):
 
         self.assertEqual(images, [])
 
+    @patch.object(server.glpi, "request")
+    def test_document_deleted_between_link_and_metadata_lookup_is_skipped(
+        self, mock_request
+    ):
+        # Realistic race: a document was unlinked/removed after the
+        # Timeline/Document call already returned it, so the follow-up
+        # metadata fetch comes back None instead of raising.
+        mock_request.side_effect = [
+            [_timeline_link(10), _timeline_link(11)],
+            None,
+            {"id": 11, "mime": "image/png", "filename": "still_here.png"},
+            b"PNGDATA",
+        ]
+
+        images = server.get_ticket_images(42)
+
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0].data, b"PNGDATA")
+
 
 if __name__ == "__main__":
     unittest.main()

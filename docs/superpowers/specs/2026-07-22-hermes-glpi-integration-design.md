@@ -87,9 +87,11 @@ Tools exposed (deliberately minimal — no delete, no rights/user management):
 | `add_solution` | `POST /Assistance/Ticket/{id}/Timeline/Solution` — `content` |
 | `search_kb` | `GET /Knowledgebase/Article` |
 | `create_kb_article` | `POST /Knowledgebase/Article` — `name`, `content`, `is_faq` |
-| `get_ticket_images` | `GET /Assistance/Ticket/{id}/Timeline/Document` (metadata) + `GET /Management/Document/{id}/Download` (bytes) for each `image/*` attachment, capped at the first 5 |
+| `get_ticket_images` | `GET /Assistance/Ticket/{id}/Timeline/Document` (link list) → `GET /Management/Document/{id}` (metadata, per linked document) → `GET /Management/Document/{id}/Download` (bytes) for each `image/*` attachment, capped at the first 5 |
 
 **Image attachments (added after initial delivery, user-reported gap: "Hermes picks up tickets fine but doesn't look at screenshots/attached files").** `get_ticket_images` returns FastMCP `Image` objects (not JSON) — confirmed live that Hermes's native-mcp client (`tools/mcp_tool.py`) converts MCP `ImageContent` blocks into a `data:{mime};base64,{data}` vision message automatically, for any MCP tool's result, not just a dedicated vision tool. Only `image/*` mime types are downloaded and returned; other attachment types (PDF, Word, etc.) are out of scope for v1 and silently skipped. `GLPIClient.request()` gained a `raw=True` mode (returns `resp.content` bytes instead of calling `resp.json()`, which would crash on binary data) to support the download call.
+
+The initial implementation assumed `Timeline/Document` returns the flat `Document` schema directly (matching GLPI's published OpenAPI spec, which documents it that way). Live end-to-end testing — a real ticket with a real image attached through GLPI's own document storage — showed this is wrong: the actual response is a timeline wrapper (`{"type": "Document", "item": {"documents_id": N, ...}}`) with no `mime` field anywhere in it, so every attachment silently looked non-image and the tool always returned an empty list. Fixed by fetching each document's metadata separately via `GET /Management/Document/{id}` (which does return the flat schema) before checking `mime`. Verified with a screenshot containing a fabricated error code and printer model that exist nowhere in the ticket's own text — the agent's reply correctly quoted them, confirming the whole download-through-vision path actually works, not just the mocked unit tests.
 
 ### 5. Skill `glpi-ticket-triage`
 

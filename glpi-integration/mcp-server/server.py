@@ -159,7 +159,7 @@ def get_ticket_images(ticket_id: int) -> list:
     images = []
     for link in links:
         document_id = link["item"]["documents_id"]
-        meta = glpi.request("GET", f"/Management/Document/{document_id}")
+        meta = glpi.request("GET", f"/Management/Document/{document_id}") or {}
         mime = meta.get("mime") or ""
         if not mime.startswith("image/"):
             continue
