@@ -59,6 +59,7 @@ services:
     volumes:
       - ./.hermes-work:/opt/data
       - ./glpi-integration/skills/glpi-ticket-triage:/opt/data/skills/devops/glpi-ticket-triage:ro
+      - ./glpi-integration/mcp-server:/opt/glpi-mcp-server:ro
     env_file:
       - .env
     environment:
