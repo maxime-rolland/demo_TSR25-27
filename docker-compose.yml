@@ -1,0 +1,52 @@
+name: glpi_docker_dev
+
+services:
+  glpi:
+    image: glpi/glpi:latest
+    restart: "no"
+    volumes:
+      # Using a named volume avoids permission issues on host (automatically managed by Docker)
+      - glpi_data:/var/glpi
+    environment:
+      - GLPI_DB_HOST=db
+      - GLPI_DB_NAME=glpi
+      - GLPI_DB_USER=glpi
+      - GLPI_DB_PASSWORD=glpi
+      - GLPI_DB_PORT=3306
+      - GLPI_INSTALL_MODE=DOCKER
+    ports:
+      - "8080:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # so GLPI's webhooks can reach Hermes on the host
+    depends_on:
+      - db
+
+  db:
+    image: mariadb:latest
+    restart: "no"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: glpi
+      MYSQL_USER: glpi
+      MYSQL_PASSWORD: glpi
+    volumes:
+      - db_data:/var/lib/mysql
+
+  hermes-glpi:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-glpi
+    restart: unless-stopped
+    command: gateway run
+    network_mode: host   # so HERMES_DASHBOARD_HOST=127.0.0.1 is the host's own loopback
+    volumes:
+      - ./.hermes-work:/opt/data
+    env_file:
+      - .env
+    environment:
+      - HERMES_DASHBOARD=1
+      - HERMES_DASHBOARD_HOST=127.0.0.1
+      - GATEWAY_ALLOW_ALL_USERS=true
+
+volumes:
+  glpi_data:
+  db_data:
