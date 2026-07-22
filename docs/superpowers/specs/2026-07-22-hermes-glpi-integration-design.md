@@ -77,6 +77,8 @@ Minimal internal HTTP relay, not published to the host, reachable only from the 
 
 Registered under `mcp_servers.glpi` in Hermes's `config.yaml`. Holds GLPI credentials via `env:` (never exposed to the general shell environment, per Hermes's MCP env-filtering). Handles the OAuth2 password-grant flow itself, including token refresh before the 1h expiry.
 
+**Gotcha, hit during Task 8:** this `env:` block is an explicit per-variable allowlist — adding a new `os.environ[...]` read to `server.py` and a matching entry to `docker-compose.yml` is *not* enough on its own. The variable must *also* be added to `mcp_servers.glpi.env` in the live `config.yaml` (`GLPI_ESCALATION_USER: ${GLPI_ESCALATION_USER}`, same `docker exec` + Python/`yaml` one-liner pattern as the block's own initial setup), or the `glpi` MCP subprocess crashes on startup with a `KeyError` for the missing var — taking down *every* tool (not just the new one) until fixed. Whenever a future task adds a new required env var to `server.py`, add it here too in the same step.
+
 Tools exposed (deliberately minimal — no delete, no rights/user management):
 
 | Tool | GLPI API call |

@@ -1381,6 +1381,21 @@ Run: `docker compose restart hermes-glpi` (no `docker-compose.yml`-triggered rec
 Run: `docker exec hermes-glpi sh -c 'echo $GLPI_ESCALATION_USER'`
 Expected: `tech`.
 
+**Also required, not optional — do this before Step 7 or the `glpi` MCP subprocess will crash on startup:** `mcp_servers.glpi.env` in the live (non-git-tracked) `config.yaml` is its own explicit per-variable allowlist (see the spec's "Gotcha, hit during Task 8" note on this same block, from Task 5's original setup) — `GLPI_ESCALATION_USER` must be added there too, the same way Task 5 Step 6 added the first five vars:
+
+```bash
+docker exec hermes-glpi python3 -c "
+import yaml
+path = '/opt/data/config.yaml'
+with open(path) as f:
+    cfg = yaml.safe_load(f)
+cfg['mcp_servers']['glpi']['env']['GLPI_ESCALATION_USER'] = '\${GLPI_ESCALATION_USER}'
+with open(path, 'w') as f:
+    yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+print('done')
+"
+```
+
 - [ ] **Step 7: Confirm the three new tools are registered**
 
 Run: `sleep 6 && docker exec hermes-glpi tail -n 5 /opt/data/logs/agent.log`
