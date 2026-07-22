@@ -58,6 +58,7 @@ services:
     network_mode: host   # so HERMES_DASHBOARD_HOST=127.0.0.1 is the host's own loopback
     volumes:
       - ./.hermes-work:/opt/data
+      - ./glpi-integration/skills/glpi-ticket-triage:/opt/data/skills/devops/glpi-ticket-triage:ro
     env_file:
       - .env
     environment:
