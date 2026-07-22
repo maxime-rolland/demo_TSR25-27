@@ -205,6 +205,28 @@ def get_ticket_followups(ticket_id: int) -> list:
 
 
 @mcp.tool()
+def get_ticket_solution(ticket_id: int):
+    """Fetch the ticket's formal solution (the record GLPI creates when a
+    ticket is marked Solved -- distinct from ordinary followups), as
+    {content, author_name, date}, or None if the ticket has no solution
+    yet. When capitalizing a resolved ticket into the KB, this is the
+    authoritative resolution -- prefer it over any earlier diagnosis
+    notes (including your own) if they disagree, since a human may have
+    solved it differently than you first guessed."""
+    entries = glpi.request(
+        "GET", f"/Assistance/Ticket/{ticket_id}/Timeline/Solution"
+    ) or []
+    if not entries:
+        return None
+    latest = entries[-1]["item"]
+    return {
+        "content": latest["content"],
+        "author_name": (latest.get("user") or {}).get("name"),
+        "date": latest["date_creation"],
+    }
+
+
+@mcp.tool()
 def assign_self(ticket_id: int) -> dict:
     """Assign hermes-bot itself to a ticket, taking visible ownership of
     it. Use this when replying with a confident, resolving answer."""

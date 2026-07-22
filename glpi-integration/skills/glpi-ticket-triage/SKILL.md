@@ -66,16 +66,29 @@ The payload's `item.status.name` is `"Solved"` (or the equivalent in GLPI's
 configured language) when this applies. Skip this branch entirely for any
 other status value.
 
-1. Call `mcp__glpi__search_kb` using the ticket's title/content, same as above.
-2. If a clearly-matching article already exists: do nothing (avoid duplicate
+1. Call `mcp__glpi__get_ticket_solution(ticket_id=<item.id>)` first — this
+   is the ticket's actual, formal resolution (a distinct record from any
+   followup), which may have been written by a human technician and may
+   say something different from any earlier diagnosis you or anyone else
+   left as a followup along the way. If it returns a result, treat its
+   `content` as the authoritative description of what actually fixed the
+   issue — use it, not your own or anyone else's earlier guesses, as the
+   basis for step 4 below. If it returns `None` (no formal solution
+   recorded — unusual but possible), fall back to
+   `mcp__glpi__get_ticket_followups` and use the most recent entry instead.
+2. Call `mcp__glpi__search_kb` using the ticket's title/content, same as above.
+3. If a clearly-matching article already exists: do nothing (avoid duplicate
    KB entries).
-3. If none exists: call `mcp__glpi__create_kb_article` with:
+4. If none exists: call `mcp__glpi__create_kb_article` with:
    - `name`: a short, reusable title for the underlying issue — generalize
      it rather than copying the ticket's own title verbatim if it is too
      specific or personal (e.g. "Ticket #123: mon imprimante ne marche pas"
      → "Résoudre un problème d'impression réseau").
-   - `content`: the general problem plus the solution, written to stand
-     alone without needing the original ticket for context.
+   - `content`: the general problem plus the **actual** solution from
+     step 1, written to stand alone without needing the original ticket
+     for context. Do not substitute a generic troubleshooting checklist
+     here if the real solution names a specific cause (a driver, an
+     update, a setting, a part) — say what it actually was.
    - `is_faq`: `False` — leave end-user-facing FAQ visibility to a human
      reviewer; this only populates the internal KB.
 
@@ -117,7 +130,7 @@ and look at the single most recent entry (the last one in the list):
   `escalate_ticket` (only when explicitly deciding to hand off to a human --
   never as a substitute for a real diagnosis) (plus
   `search_kb`/`search_tickets`/`get_ticket`/`get_ticket_images`/
-  `get_ticket_followups` for reads). Never attempt to delete a ticket, or
+  `get_ticket_followups`/`get_ticket_solution` for reads). Never attempt to delete a ticket, or
   touch user/rights data — the `glpi` MCP server does not expose those
   actions, and the underlying GLPI account does not have the rights for
   them either. `escalate_ticket` only ever assigns the one pre-configured

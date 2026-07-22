@@ -323,6 +323,49 @@ class GetTicketFollowupsTests(unittest.TestCase):
         self.assertEqual(server.get_ticket_followups(9), [])
 
 
+def _timeline_solution(content, author_name):
+    """Shape of one entry from GET .../Timeline/Solution -- same
+    timeline-wrapper pattern as Followup and Document."""
+    return {
+        "type": "Solution",
+        "item": {
+            "content": content,
+            "date_creation": "2026-07-22T13:55:19+00:00",
+            "user": {"id": 2, "name": author_name},
+        },
+    }
+
+
+class GetTicketSolutionTests(unittest.TestCase):
+    @patch.object(server.glpi, "request")
+    def test_returns_latest_solution_simplified(self, mock_request):
+        mock_request.return_value = [
+            _timeline_solution("premiere hypothese, incorrecte", "hermes-bot"),
+            _timeline_solution("Probleme de driver wifi, corrige par Windows Update", "glpi"),
+        ]
+
+        solution = server.get_ticket_solution(16)
+
+        self.assertEqual(
+            solution,
+            {
+                "content": "Probleme de driver wifi, corrige par Windows Update",
+                "author_name": "glpi",
+                "date": "2026-07-22T13:55:19+00:00",
+            },
+        )
+
+    @patch.object(server.glpi, "request")
+    def test_no_solution_returns_none(self, mock_request):
+        mock_request.return_value = []
+        self.assertIsNone(server.get_ticket_solution(16))
+
+    @patch.object(server.glpi, "request")
+    def test_none_response_treated_as_no_solution(self, mock_request):
+        mock_request.return_value = None
+        self.assertIsNone(server.get_ticket_solution(16))
+
+
 class AssignSelfTests(unittest.TestCase):
     @patch.object(server.glpi, "resolve_user_id")
     @patch.object(server.glpi, "request")
