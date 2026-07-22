@@ -102,5 +102,28 @@ def classic_login() -> tuple[requests.Session, str]:
     return session, fresh_csrf_match.group(1)
 
 
+def upload_file(
+    session: requests.Session, csrf_token: str, filename: str, file_bytes: bytes, mime: str
+) -> str:
+    """Upload bytes into GLPI's tmp storage via the same AJAX endpoint the
+    rich-text editor's file widget uses. Returns the tmp filename GLPI
+    assigned, to be referenced via `_filename` when creating the Document."""
+    resp = session.post(
+        f"{BASE_URL}/ajax/fileupload.php",
+        files={"filename": (filename, io.BytesIO(file_bytes), mime)},
+        data={"name": "filename"},
+        headers={
+            "X-Requested-With": "XMLHttpRequest",
+            "X-Glpi-Csrf-Token": csrf_token,
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    entry = resp.json()["filename"][0]
+    if "error" in entry:
+        raise RuntimeError(f"GLPI upload rejected the file: {entry['error']}")
+    return entry["name"]
+
+
 if __name__ == "__main__":
     pass
