@@ -287,7 +287,7 @@ Expected: `Container glpi-webhook-relay Started`, `Container glpi_docker_dev-glp
 - [ ] **Step 4: Verify the relay is listening and reachable from `glpi`**
 
 Run: `docker exec glpi_docker_dev-glpi-1 curl -s -o /dev/null -w "HTTP %{http_code}\n" http://glpi-webhook-relay:8080/relay`
-Expected: `HTTP 405` (Method Not Allowed on GET — confirms DNS resolution and the port both work; the relay only implements `do_POST`).
+Expected: `HTTP 501` (Not Implemented — `relay.py` only defines `do_POST`, so Python's stdlib `BaseHTTPRequestHandler` falls back to its default 501 response for any other verb. This confirms DNS resolution and the port both work; the exact non-2xx code is incidental, what matters is that the request reached the relay's handler at all).
 
 
 ---
