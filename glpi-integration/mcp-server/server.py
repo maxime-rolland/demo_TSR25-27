@@ -142,10 +142,19 @@ def add_solution(ticket_id: int, content: str) -> dict:
 
 
 @mcp.tool()
-def search_kb(query: str) -> list:
-    """Search Knowledge Base articles. `query` is a GLPI RSQL filter, e.g.
-    name=like="*wifi*" or content=like="*wifi*"."""
-    return glpi.request("GET", "/Knowledgebase/Article", params={"filter": query})
+def search_kb(query: str = "", limit: int = 50) -> list:
+    """List Knowledge Base articles for you to read and judge relevance
+    yourself. Call with no `query` to get up to `limit` articles and
+    review their name/content directly -- this is the recommended way to
+    search: GLPI's `query` filter (an RSQL substring match, e.g.
+    name=like="*wifi*") only catches an exact literal substring and
+    silently misses any variant (accents, hyphenation like "wifi" vs
+    "Wi-Fi", synonyms), so a guessed keyword is not a reliable way to
+    rule an article out."""
+    params = {"limit": limit}
+    if query:
+        params["filter"] = query
+    return glpi.request("GET", "/Knowledgebase/Article", params=params)
 
 
 @mcp.tool()

@@ -27,9 +27,16 @@ every action on GLPI — never call the GLPI REST API directly.
    other visual context in a screenshot often matters more than the
    ticket's own written description. Non-image attachments (PDF, Word,
    etc.) are not supported yet and won't appear here.
-3. Call `mcp__glpi__search_kb` with an RSQL filter built from the ticket's
-   key terms, e.g. `name=like="*<keyword>*"`. If that returns nothing, also
-   try `content=like="*<keyword>*"`.
+3. Call `mcp__glpi__search_kb()` with no arguments to list existing KB
+   articles, and read through their `name`/`content` yourself to judge
+   whether any clearly covers this issue. **Do not rely on guessing an
+   exact keyword filter** (e.g. `name=like="*wifi*"`) to rule an article
+   out — GLPI's filter is a literal substring match with no fuzziness, so
+   a real match is silently missed by any wording difference (accents,
+   hyphenation like "wifi" vs "Wi-Fi", singular/plural, a French vs.
+   English term). Only pass a `query` filter if the KB is large enough
+   that reading everything isn't practical — reading the list is the
+   default, not the fallback.
 4. Decide:
    - **Confident match** — the KB article clearly answers this exact
      request, not just a loosely related topic: reply directly with
@@ -76,7 +83,7 @@ other status value.
    basis for step 4 below. If it returns `None` (no formal solution
    recorded — unusual but possible), fall back to
    `mcp__glpi__get_ticket_followups` and use the most recent entry instead.
-2. Call `mcp__glpi__search_kb` using the ticket's title/content, same as above.
+2. Call `mcp__glpi__search_kb()` with no arguments and read the list, same as above — not a guessed keyword filter.
 3. If a clearly-matching article already exists: do nothing (avoid duplicate
    KB entries).
 4. If none exists: call `mcp__glpi__create_kb_article` with:

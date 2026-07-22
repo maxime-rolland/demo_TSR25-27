@@ -128,13 +128,25 @@ class ToolTests(unittest.TestCase):
         )
 
     @patch.object(server.glpi, "request")
-    def test_search_kb_uses_filter_param(self, mock_request):
+    def test_search_kb_uses_filter_param_when_given(self, mock_request):
         mock_request.return_value = []
         server.search_kb('name=like="*wifi*"')
         mock_request.assert_called_once_with(
             "GET",
             "/Knowledgebase/Article",
-            params={"filter": 'name=like="*wifi*"'},
+            params={"limit": 50, "filter": 'name=like="*wifi*"'},
+        )
+
+    @patch.object(server.glpi, "request")
+    def test_search_kb_with_no_query_lists_recent_articles(self, mock_request):
+        mock_request.return_value = [{"id": 1, "name": "Some article"}]
+        result = server.search_kb()
+
+        self.assertEqual(result, [{"id": 1, "name": "Some article"}])
+        mock_request.assert_called_once_with(
+            "GET",
+            "/Knowledgebase/Article",
+            params={"limit": 50},
         )
 
 
