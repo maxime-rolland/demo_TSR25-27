@@ -101,8 +101,9 @@ Loaded by the `glpi-ticket` webhook subscription. Encodes the decision policy:
 
 ## Security / guardrails
 
-- `hermes-bot` has no delete rights on tickets (verified) and no rights/user management (to be confirmed identically when the profile is reviewed during implementation).
-- The MCP tool surface has no delete/admin actions — mirrors the account's own restriction, so even a prompt-injected or misbehaving agent run can't remove data via this path.
+- `hermes-bot` has no delete rights on tickets (verified) and no rights/user management.
+- The MCP tool surface has no delete/admin actions on any itemtype — this is the actual boundary the agent operates within regardless of the underlying account's raw GLPI rights, so even a prompt-injected or misbehaving agent run can't remove data via this path.
+- One narrower exception to "mirrors the account's own restriction," found and accepted during Task 6: `hermes-bot`'s Technician profile was granted `KNOWBASEADMIN` (see Environment section) so its own `search_kb` calls can see articles it previously created. This specific right also makes `canUpdateItem()`/`canDeleteItem()` return true unconditionally for *any* KB article (bypassing the normal ownership/visibility checks) — i.e., the account itself can now edit or delete KB content it doesn't own, at the GLPI level. This does not widen the agent's actual capability, since the `glpi` MCP server still exposes no update/delete tool for `KnowbaseItem` — only `search_kb` and `create_kb_article` — but it is a real change to the account's raw rights, scoped to the Knowledge Base only (Tickets are unaffected).
 - The relay is unreachable from outside the compose network (no published port).
 - Public-facing replies (`is_private=false`) are gated entirely by the skill's confidence check — default is to stay private/internal when uncertain, matching the "semi-autonomous" approval from brainstorming.
 
