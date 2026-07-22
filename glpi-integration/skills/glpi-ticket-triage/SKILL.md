@@ -48,15 +48,17 @@ every action on GLPI — never call the GLPI REST API directly.
      ownership of the ticket too.
    - **No confident match, or the request needs ticket-specific info**
      (asset details, account access, something only a technician can
-     check): `mcp__glpi__add_followup(ticket_id=<item.id>, content=<your
-     diagnosis and a suggested next step for the technician>,
-     is_private=True)`, **and then** call
-     `mcp__glpi__escalate_ticket(ticket_id=<item.id>, reason=<the same
-     diagnosis>)` — hand the ticket to a human instead of leaving an
-     unassigned note nobody might notice. Do not guess a public reply in
-     this case — an internal note plus escalation is always the safe
-     default. **Never call `mcp__glpi__add_solution` here** — only a
-     confident public reply (above) or a human ever resolves a ticket.
+     check): call `mcp__glpi__escalate_ticket(ticket_id=<item.id>,
+     reason=<your diagnosis and a suggested next step for the
+     technician>)` — this one call both assigns the ticket to a human
+     **and** posts your diagnosis as the private note explaining why, so
+     it is never left unassigned with nobody noticing. **Do not also call
+     `mcp__glpi__add_followup` here** — `escalate_ticket` already posts
+     the private note itself; calling both would post the same diagnosis
+     twice. Do not guess a public reply in this case — escalation is
+     always the safe default. **Never call `mcp__glpi__add_solution`
+     here** — only a confident public reply (above) or a human ever
+     resolves a ticket.
 
 ### `event: "update"` where the ticket's status just changed to "Solved"
 
@@ -106,7 +108,9 @@ and look at the single most recent entry (the last one in the list):
 
 ## Guardrails
 
-- The only write actions that are ever appropriate here are `add_followup`,
+- The only write actions that are ever appropriate here are `add_followup`
+  (only for a confident public reply, or the confirms-fixed close-out in
+  the update branch — never to post a private diagnosis, see below),
   `add_solution` (only alongside a confident public `add_followup`, never
   alone and never for a private/internal note), `create_kb_article`,
   `assign_self` (only alongside a confident, resolving `add_followup`), and
@@ -119,6 +123,10 @@ and look at the single most recent entry (the last one in the list):
   them either. `escalate_ticket` only ever assigns the one pre-configured
   escalation user -- there is no tool for assigning an arbitrary person or
   group.
+- `escalate_ticket` always posts its own private followup (the `reason`
+  argument) — never call `add_followup(is_private=True, ...)` right before
+  or after it with the same or similar content, or the diagnosis is posted
+  twice on the ticket.
 - When unsure whether a match is confident enough for a public reply,
   default to a private/internal followup instead. A wrong technician-facing
   note is easy to correct; a wrong public reply — or a ticket auto-resolved
