@@ -1,2 +1,4 @@
 .hermes-work/
 .env
+.claude/
+__pycache__/
