@@ -29,7 +29,12 @@ services:
     env_file:
       - .env
     environment:
-      - RELAY_LISTEN_PORT=8080
+      # Port 80, not 8080: GLPI's outbound-webhook SSRF allowlist regex
+      # (Toolbox::isUrlSafe) has no port-matching group at all, so any
+      # webhook target URL containing an explicit :port is unconditionally
+      # rejected as "unsafe" before GLPI even attempts the request. Using
+      # the default HTTP port keeps the target URL port-free.
+      - RELAY_LISTEN_PORT=80
       - RELAY_TARGET_URL=http://host.docker.internal:8644/webhooks/glpi-ticket
     extra_hosts:
       - "host.docker.internal:host-gateway"   # so the relay can reach Hermes on the host

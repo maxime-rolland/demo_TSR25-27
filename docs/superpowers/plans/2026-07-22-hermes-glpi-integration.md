@@ -232,7 +232,7 @@ OK
 
 **Interfaces:**
 - Consumes: `glpi-integration/relay/relay.py` (Task 1) — run as `python3 /app/relay.py` inside the new service.
-- Produces: a running `glpi-webhook-relay` service reachable from the `glpi` container at `http://glpi-webhook-relay:8080/relay`, and a `$RELAY_SECRET` value that Task 4 must reuse verbatim when creating the Hermes webhook subscription.
+- Produces: a running `glpi-webhook-relay` service reachable from the `glpi` container at `http://glpi-webhook-relay/relay` (port 80 — see the note in Step 2 on why), and a `$RELAY_SECRET` value that Task 4 must reuse verbatim when creating the Hermes webhook subscription.
 
 - [ ] **Step 1: Generate the shared HMAC secret**
 
@@ -270,7 +270,13 @@ Move `extra_hosts` off the `glpi` service (it no longer needs to reach the host 
     volumes:
       - ./glpi-integration/relay:/app:ro
     environment:
-      - RELAY_LISTEN_PORT=8080
+      # Port 80, not 8080: GLPI's outbound-webhook SSRF allowlist regex
+      # (Toolbox::isUrlSafe, checked against GLPI_SERVERSIDE_URL_ALLOWLIST)
+      # has no port-matching group at all — any webhook target URL with an
+      # explicit :port is unconditionally rejected as "unsafe" before GLPI
+      # even attempts the request, regardless of hostname. Using the
+      # default HTTP port keeps the target URL port-free so GLPI accepts it.
+      - RELAY_LISTEN_PORT=80
       - RELAY_TARGET_URL=http://host.docker.internal:8644/webhooks/glpi-ticket
       - RELAY_SECRET=<paste the secret generated in Step 1>
     extra_hosts:
@@ -286,7 +292,7 @@ Expected: `Container glpi-webhook-relay Started`, `Container glpi_docker_dev-glp
 
 - [ ] **Step 4: Verify the relay is listening and reachable from `glpi`**
 
-Run: `docker exec glpi_docker_dev-glpi-1 curl -s -o /dev/null -w "HTTP %{http_code}\n" http://glpi-webhook-relay:8080/relay`
+Run: `docker exec glpi_docker_dev-glpi-1 curl -s -o /dev/null -w "HTTP %{http_code}\n" http://glpi-webhook-relay/relay`
 Expected: `HTTP 501` (Not Implemented — `relay.py` only defines `do_POST`, so Python's stdlib `BaseHTTPRequestHandler` falls back to its default 501 response for any other verb. This confirms DNS resolution and the port both work; the exact non-2xx code is incidental, what matters is that the request reached the relay's handler at all).
 
 
@@ -297,7 +303,7 @@ Expected: `HTTP 501` (Not Implemented — `relay.py` only defines `do_POST`, so 
 **Files:** none (GLPI UI configuration only).
 
 **Interfaces:**
-- Consumes: the relay URL from Task 2 (`http://glpi-webhook-relay:8080/relay`).
+- Consumes: the relay URL from Task 2 (`http://glpi-webhook-relay/relay` — port 80, no explicit port in the URL; see Task 2 Step 2's note on GLPI's SSRF allowlist rejecting any URL with a `:port`).
 - Produces: two active GLPI webhook definitions whose queued deliveries Task 6's end-to-end test depends on.
 
 - [ ] **Step 1: Delete the throwaway test webhook**
@@ -311,7 +317,7 @@ Setup → Webhooks → **+**:
 - Active: Yes
 - Itemtype: `Ticket`
 - Event: `New`
-- URL: `http://glpi-webhook-relay:8080/relay`
+- URL: `http://glpi-webhook-relay/relay` (no `:80` needed — it's the default HTTP port)
 - HTTP method: POST
 - Number of retries: `3` (GLPI's own retry covers transient relay/Hermes downtime, per the design's error-handling section)
 
@@ -329,8 +335,8 @@ Save.
 
 Create a throwaway test ticket in GLPI (any title/content). Wait up to 90 seconds (GLPI's `QueuedWebhook` cron runs every 60s).
 
-Run: `docker exec glpi_docker_dev-db-1 mariadb -uglpi -pglpi glpi -e "SELECT id,itemtype,event,url,sent_try,sent_time FROM glpi_queuedwebhooks ORDER BY id DESC LIMIT 3;"`
-Expected: a new row with `event=new`, `url=http://glpi-webhook-relay:8080/relay`, `sent_try=1`, `sent_time` populated (non-NULL) — confirms GLPI successfully reached the relay (a connection failure would leave `sent_time` NULL and `sent_try` incrementing on each cron pass).
+Run: `docker exec glpi_docker_dev-db-1 mariadb -uglpi -pglpi glpi -e "SELECT id,itemtype,event,url,sent_try,sent_time,last_status_code FROM glpi_queuedwebhooks ORDER BY id DESC LIMIT 3;"`
+Expected: a new row with `event=new`, `url=http://glpi-webhook-relay/relay`, `sent_try=1`, `sent_time` populated (non-NULL) — confirms GLPI successfully reached the relay (a connection failure, or GLPI's SSRF check rejecting the URL, would leave `sent_time` NULL and `sent_try` incrementing on each cron pass — check `/var/glpi/logs/webhook.log` inside the `glpi` container if that happens). `last_status_code` may be `404` at this stage — that's expected and correct, not a bug: Task 4 hasn't created Hermes's `/webhooks/glpi-ticket` route yet, so Hermes has nothing to answer with until then. The full 2xx path is verified in Task 6, after Task 4.
 
 Leave this test ticket for now — Task 6 covers full cleanup.
 
