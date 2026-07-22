@@ -158,16 +158,25 @@ class GLPIClientRawModeTests(unittest.TestCase):
         resp.json.assert_not_called()
 
 
+def _timeline_link(document_id):
+    """Shape of one entry from GET .../Timeline/Document -- confirmed live
+    against the real GLPI v2.3 API: it's a wrapper around the document id,
+    NOT the flat Document object (which has to be fetched separately)."""
+    return {
+        "type": "Document",
+        "item": {"documents_id": document_id, "itemtype": "Ticket"},
+    }
+
+
 class GetTicketImagesTests(unittest.TestCase):
     @patch.object(server.glpi, "request")
     def test_filters_to_images_and_downloads_each(self, mock_request):
         mock_request.side_effect = [
-            [
-                {"id": 10, "mime": "image/png", "filename": "screenshot.png"},
-                {"id": 11, "mime": "application/pdf", "filename": "manual.pdf"},
-                {"id": 12, "mime": "image/jpeg", "filename": "photo.jpg"},
-            ],
+            [_timeline_link(10), _timeline_link(11), _timeline_link(12)],
+            {"id": 10, "mime": "image/png", "filename": "screenshot.png"},
             b"PNGDATA",
+            {"id": 11, "mime": "application/pdf", "filename": "manual.pdf"},
+            {"id": 12, "mime": "image/jpeg", "filename": "photo.jpg"},
             b"JPGDATA",
         ]
 
@@ -179,28 +188,43 @@ class GetTicketImagesTests(unittest.TestCase):
         mock_request.assert_any_call(
             "GET", "/Assistance/Ticket/42/Timeline/Document"
         )
+        mock_request.assert_any_call("GET", "/Management/Document/10")
         mock_request.assert_any_call(
             "GET", "/Management/Document/10/Download", raw=True
         )
+        mock_request.assert_any_call("GET", "/Management/Document/11")
+        mock_request.assert_any_call("GET", "/Management/Document/12")
         mock_request.assert_any_call(
             "GET", "/Management/Document/12/Download", raw=True
         )
 
     @patch.object(server.glpi, "request")
     def test_caps_at_five_images(self, mock_request):
-        docs = [
-            {"id": i, "mime": "image/png", "filename": f"img{i}.png"}
-            for i in range(8)
-        ]
-        mock_request.side_effect = [docs] + [b"DATA"] * 8
+        links = [_timeline_link(i) for i in range(8)]
+        per_doc = []
+        for i in range(8):
+            per_doc.append({"id": i, "mime": "image/png", "filename": f"img{i}.png"})
+            per_doc.append(b"DATA")
+        mock_request.side_effect = [links] + per_doc
 
         images = server.get_ticket_images(42)
 
         self.assertEqual(len(images), 5)
+        # only 5 metadata + 5 download calls should have happened, plus the
+        # initial Timeline/Document call -- never the 6th-8th documents'.
+        self.assertEqual(mock_request.call_count, 1 + 5 + 5)
 
     @patch.object(server.glpi, "request")
     def test_no_documents_returns_empty_list(self, mock_request):
         mock_request.return_value = []
+
+        images = server.get_ticket_images(42)
+
+        self.assertEqual(images, [])
+
+    @patch.object(server.glpi, "request")
+    def test_none_response_treated_as_no_documents(self, mock_request):
+        mock_request.return_value = None
 
         images = server.get_ticket_images(42)
 

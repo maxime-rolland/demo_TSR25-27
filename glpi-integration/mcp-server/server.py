@@ -155,14 +155,16 @@ def get_ticket_images(ticket_id: int) -> list:
     viewable images. Non-image documents (PDF, Word, etc.) are not
     supported yet and are skipped. Capped at the first 5 image
     attachments found on the ticket."""
-    docs = glpi.request("GET", f"/Assistance/Ticket/{ticket_id}/Timeline/Document")
+    links = glpi.request("GET", f"/Assistance/Ticket/{ticket_id}/Timeline/Document") or []
     images = []
-    for doc in docs:
-        mime = doc.get("mime") or ""
+    for link in links:
+        document_id = link["item"]["documents_id"]
+        meta = glpi.request("GET", f"/Management/Document/{document_id}")
+        mime = meta.get("mime") or ""
         if not mime.startswith("image/"):
             continue
         data = glpi.request(
-            "GET", f"/Management/Document/{doc['id']}/Download", raw=True
+            "GET", f"/Management/Document/{document_id}/Download", raw=True
         )
         images.append(Image(data=data, format=mime.split("/")[-1]))
         if len(images) >= MAX_IMAGES_PER_TICKET:
