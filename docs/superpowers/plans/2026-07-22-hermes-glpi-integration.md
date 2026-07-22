@@ -371,7 +371,7 @@ metadata:
 
 Loaded for every run triggered by the `glpi-ticket` webhook subscription. The
 webhook payload is a GLPI Ticket event: `{"item": {...ticket...}, "event":
-"new"|"update"}`. Use the `mcp_glpi_*` tools (from the `glpi` MCP server) for
+"new"|"update"}`. Use the `mcp__glpi__*` tools (from the `glpi` MCP server) for
 every action on GLPI — never call the GLPI REST API directly.
 
 ## Decision policy
@@ -380,21 +380,21 @@ every action on GLPI — never call the GLPI REST API directly.
 
 1. Read the ticket's `name` (title) and `content` (description) from the
    payload.
-2. Call `mcp_glpi_search_kb` with an RSQL filter built from the ticket's key
+2. Call `mcp__glpi__search_kb` with an RSQL filter built from the ticket's key
    terms, e.g. `name=like="*<keyword>*"`. If that returns nothing, also try
    `content=like="*<keyword>*"`.
 3. Decide:
    - **Confident match** — the KB article clearly answers this exact
      request, not just a loosely related topic: reply directly with
-     `mcp_glpi_add_followup(ticket_id=<item.id>, content=<answer drawn from
+     `mcp__glpi__add_followup(ticket_id=<item.id>, content=<answer drawn from
      the KB article>, is_private=False)`.
    - **No confident match, or the request needs ticket-specific info** (asset
      details, account access, something only a technician can check):
-     `mcp_glpi_add_followup(ticket_id=<item.id>, content=<your diagnosis and
+     `mcp__glpi__add_followup(ticket_id=<item.id>, content=<your diagnosis and
      a suggested next step for the technician>, is_private=True)`. Do not
      guess a public reply in this case — an internal note is always the safe
      default.
-4. Never call `mcp_glpi_add_solution` or otherwise resolve/close the ticket
+4. Never call `mcp__glpi__add_solution` or otherwise resolve/close the ticket
    in this step — only a human, or the resolution step below, does that.
 
 ### `event: "update"` where the ticket's status just changed to "Solved"
@@ -403,10 +403,10 @@ The payload's `item.status.name` is `"Solved"` (or the equivalent in GLPI's
 configured language) when this applies. Skip this branch entirely for any
 other status value.
 
-1. Call `mcp_glpi_search_kb` using the ticket's title/content, same as above.
+1. Call `mcp__glpi__search_kb` using the ticket's title/content, same as above.
 2. If a clearly-matching article already exists: do nothing (avoid duplicate
    KB entries).
-3. If none exists: call `mcp_glpi_create_kb_article` with:
+3. If none exists: call `mcp__glpi__create_kb_article` with:
    - `name`: a short, reusable title for the underlying issue — generalize
      it rather than copying the ticket's own title verbatim if it is too
      specific or personal (e.g. "Ticket #123: mon imprimante ne marche pas"
@@ -858,7 +858,7 @@ Run: `docker compose restart hermes-glpi` (note: `docker compose up -d` is a no-
 Hermes routes these logs to files under `/opt/data/logs/`, not to the container's captured stdout/stderr — `docker logs` won't show them.
 
 Run: `sleep 6 && docker exec hermes-glpi tail -n 5 /opt/data/logs/agent.log`
-Expected: a line like `MCP server 'glpi' (stdio): registered N tool(s): mcp__glpi__search_tickets, mcp__glpi__get_ticket, mcp__glpi__add_followup, mcp__glpi__add_solution, mcp__glpi__search_kb, mcp__glpi__create_kb_article, ...`. Note the tool names use **double** underscores (`mcp__glpi__<tool>`), not single (`mcp_glpi_<tool>`) — the native-mcp skill's own docs describe the convention with single underscores, but this is what Hermes actually registers; the `glpi-ticket-triage` skill (Task 4) has already been corrected to use the double-underscore names. `N` may be higher than 6 — FastMCP automatically adds 4 generic protocol tools (`list_resources`, `read_resource`, `list_prompts`, `get_prompt`) to every server; that's expected, not a sign `server.py` defined extra GLPI actions. If nothing appears, check `/opt/data/logs/mcp-stderr.log` for a connection error and fix before continuing.
+Expected: a line like `MCP server 'glpi' (stdio): registered N tool(s): mcp__glpi__search_tickets, mcp__glpi__get_ticket, mcp__glpi__add_followup, mcp__glpi__add_solution, mcp__glpi__search_kb, mcp__glpi__create_kb_article, ...`. Note the tool names use **double** underscores (`mcp__glpi__<tool>`), not single (`mcp__glpi__<tool>`) — the native-mcp skill's own docs describe the convention with single underscores, but this is what Hermes actually registers; the `glpi-ticket-triage` skill (Task 4) has already been corrected to use the double-underscore names. `N` may be higher than 6 — FastMCP automatically adds 4 generic protocol tools (`list_resources`, `read_resource`, `list_prompts`, `get_prompt`) to every server; that's expected, not a sign `server.py` defined extra GLPI actions. If nothing appears, check `/opt/data/logs/mcp-stderr.log` for a connection error and fix before continuing.
 
 
 ---
@@ -890,7 +890,7 @@ Expected: a line showing the `glpi-ticket` webhook route fired and triggered an 
 
 In GLPI, open the test ticket from Step 1 and check its timeline for a new followup (public or private, per the skill's decision).
 
-If nothing appears after ~2 minutes, check in order: `docker exec hermes-glpi grep -iE "error|glpi-ticket" /opt/data/logs/agent.log /opt/data/logs/gateway.log /opt/data/logs/errors.log` (agent/tool errors), then `docker exec glpi_docker_dev-db-1 mariadb -uglpi -pglpi glpi -e "SELECT id,sent_try,sent_time FROM glpi_queuedwebhooks ORDER BY id DESC LIMIT 3;"` (did GLPI even attempt delivery).
+If nothing appears after ~2 minutes, check in order: `docker exec hermes-glpi grep -iE "error|glpi-ticket|mcp__glpi" /opt/data/logs/agent.log /opt/data/logs/gateway.log /opt/data/logs/errors.log` (agent/tool errors), then `docker exec glpi_docker_dev-db-1 mariadb -uglpi -pglpi glpi -e "SELECT id,sent_try,sent_time FROM glpi_queuedwebhooks ORDER BY id DESC LIMIT 3;"` (did GLPI even attempt delivery).
 
 - [ ] **Step 5: Verify the resolution → KB path**
 

@@ -47,7 +47,7 @@ glpi-webhook-relay  (new, internal-only compose service)
 Hermes webhook route  http://host.docker.internal:8644/webhooks/glpi-ticket
    │  triggers an agent run (skill: glpi-ticket-triage)
    ▼
-Agent  ──(MCP tools mcp_glpi_*)──▶  GLPI REST API v2.3 (as hermes-bot)
+Agent  ──(MCP tools mcp__glpi__*)──▶  GLPI REST API v2.3 (as hermes-bot)
 ```
 
 ## Components
