@@ -61,7 +61,9 @@ class RelayEndToEndTest(unittest.TestCase):
 
     def tearDown(self):
         self.relay_server.shutdown()
+        self.relay_server.server_close()
         self.target_server.shutdown()
+        self.target_server.server_close()
 
     def test_forwards_with_correct_signature(self):
         payload = json.dumps({"item": {"id": 1}, "event": "new"}).encode()
