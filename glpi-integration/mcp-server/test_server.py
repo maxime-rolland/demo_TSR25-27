@@ -11,6 +11,7 @@ os.environ["GLPI_OAUTH_CLIENT_ID"] = "test-client-id"
 os.environ["GLPI_OAUTH_CLIENT_SECRET"] = "test-client-secret"
 os.environ["GLPI_USER"] = "test-user"
 os.environ["GLPI_PASSWORD"] = "test-password"
+os.environ["GLPI_ESCALATION_USER"] = "test-escalation-user"
 
 import server
 
@@ -248,6 +249,129 @@ class GetTicketImagesTests(unittest.TestCase):
 
         self.assertEqual(len(images), 1)
         self.assertEqual(images[0].data, b"PNGDATA")
+
+
+class ResolveUserIdTests(unittest.TestCase):
+    @patch.object(server.glpi, "request")
+    def test_resolves_and_caches(self, mock_request):
+        mock_request.return_value = [
+            {"id": 4, "username": "tech"},
+            {"id": 7, "username": "hermes-bot"},
+        ]
+        # Exercise the patched singleton itself, not a fresh GLPIClient():
+        # @patch.object(server.glpi, "request") only shadows `request` on
+        # the `server.glpi` instance, so a separately-constructed client
+        # would still hit the real (unpatched) HTTP request method.
+        client = server.glpi
+
+        user_id = client.resolve_user_id("hermes-bot")
+        user_id_again = client.resolve_user_id("hermes-bot")
+
+        self.assertEqual(user_id, 7)
+        self.assertEqual(user_id_again, 7)
+        mock_request.assert_called_once_with("GET", "/Administration/User")
+
+    @patch.object(server.glpi, "request")
+    def test_raises_for_unknown_username(self, mock_request):
+        mock_request.return_value = [{"id": 4, "username": "tech"}]
+        client = server.glpi
+
+        with self.assertRaises(ValueError):
+            client.resolve_user_id("does-not-exist")
+
+
+def _timeline_followup(content, is_private, author_name):
+    """Shape of one entry from GET .../Timeline/Followup -- the same
+    timeline-wrapper pattern already confirmed live for Timeline/Document
+    in Task 7 (see that fix's commit message), not a flat object."""
+    return {
+        "type": "Followup",
+        "item": {
+            "content": content,
+            "is_private": is_private,
+            "date": "2026-07-22T12:00:00+00:00",
+            "user": {"id": 1, "name": author_name},
+        },
+    }
+
+
+class GetTicketFollowupsTests(unittest.TestCase):
+    @patch.object(server.glpi, "request")
+    def test_simplifies_timeline_wrapper_shape(self, mock_request):
+        mock_request.return_value = [
+            _timeline_followup("Bonjour", False, "hermes-bot"),
+            _timeline_followup("Merci !", False, "ivan"),
+        ]
+
+        followups = server.get_ticket_followups(9)
+
+        self.assertEqual(len(followups), 2)
+        self.assertEqual(
+            followups[0],
+            {
+                "content": "Bonjour",
+                "is_private": False,
+                "date": "2026-07-22T12:00:00+00:00",
+                "author_name": "hermes-bot",
+            },
+        )
+        self.assertEqual(followups[1]["author_name"], "ivan")
+
+    @patch.object(server.glpi, "request")
+    def test_no_followups_returns_empty_list(self, mock_request):
+        mock_request.return_value = None
+        self.assertEqual(server.get_ticket_followups(9), [])
+
+
+class AssignSelfTests(unittest.TestCase):
+    @patch.object(server.glpi, "resolve_user_id")
+    @patch.object(server.glpi, "request")
+    def test_assigns_resolved_self_id(self, mock_request, mock_resolve):
+        mock_resolve.return_value = 7
+        mock_request.return_value = {"id": 1, "href": "/Assistance/Ticket/9/TeamMember/1"}
+
+        result = server.assign_self(9)
+
+        mock_resolve.assert_called_once_with(server.GLPI_USER)
+        mock_request.assert_called_once_with(
+            "POST",
+            "/Assistance/Ticket/9/TeamMember",
+            json={"type": "User", "id": 7, "role": "assigned"},
+        )
+        self.assertEqual(result, {"id": 1, "href": "/Assistance/Ticket/9/TeamMember/1"})
+
+
+class EscalateTicketTests(unittest.TestCase):
+    @patch.object(server.glpi, "resolve_user_id")
+    @patch.object(server.glpi, "request")
+    def test_assigns_escalation_user_and_posts_private_reason(
+        self, mock_request, mock_resolve
+    ):
+        mock_resolve.return_value = 4
+        mock_request.side_effect = [
+            {"id": 1, "href": "/Assistance/Ticket/9/TeamMember/1"},
+            {"id": 2, "href": "/Assistance/Ticket/9/Timeline/Followup/2"},
+        ]
+
+        result = server.escalate_ticket(
+            9, "Le client dit que ca ne marche toujours pas."
+        )
+
+        mock_resolve.assert_called_once_with(server.ESCALATION_USER)
+        mock_request.assert_any_call(
+            "POST",
+            "/Assistance/Ticket/9/TeamMember",
+            json={"type": "User", "id": 4, "role": "assigned"},
+        )
+        mock_request.assert_any_call(
+            "POST",
+            "/Assistance/Ticket/9/Timeline/Followup",
+            json={
+                "content": "Le client dit que ca ne marche toujours pas.",
+                "is_private": True,
+            },
+        )
+        self.assertEqual(result, {"id": 1, "href": "/Assistance/Ticket/9/TeamMember/1"})
 
 
 if __name__ == "__main__":

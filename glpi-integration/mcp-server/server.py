@@ -18,6 +18,7 @@ CLIENT_ID = os.environ["GLPI_OAUTH_CLIENT_ID"]
 CLIENT_SECRET = os.environ["GLPI_OAUTH_CLIENT_SECRET"]
 GLPI_USER = os.environ["GLPI_USER"]
 GLPI_PASSWORD = os.environ["GLPI_PASSWORD"]
+ESCALATION_USER = os.environ["GLPI_ESCALATION_USER"]
 
 mcp = FastMCP("glpi")
 
@@ -27,6 +28,7 @@ class GLPIClient:
         self._access_token = None
         self._refresh_token = None
         self._expires_at = 0.0
+        self._user_id_cache = {}
 
     def _password_grant(self):
         resp = requests.post(
@@ -87,6 +89,16 @@ class GLPIClient:
         if resp.content:
             return resp.json()
         return None
+
+    def resolve_user_id(self, username):
+        if username in self._user_id_cache:
+            return self._user_id_cache[username]
+        users = self.request("GET", "/Administration/User") or []
+        for user in users:
+            if user.get("username") == username:
+                self._user_id_cache[username] = user["id"]
+                return user["id"]
+        raise ValueError(f"No GLPI user found with username {username!r}")
 
 
 glpi = GLPIClient()
@@ -170,6 +182,57 @@ def get_ticket_images(ticket_id: int) -> list:
         if len(images) >= MAX_IMAGES_PER_TICKET:
             break
     return images
+
+
+@mcp.tool()
+def get_ticket_followups(ticket_id: int) -> list:
+    """List the followups (replies/notes) on a ticket, in the order GLPI
+    returns them, as {content, is_private, date, author_name} -- use this
+    to see who wrote the most recent message on a ticket and what they
+    said."""
+    entries = glpi.request(
+        "GET", f"/Assistance/Ticket/{ticket_id}/Timeline/Followup"
+    ) or []
+    return [
+        {
+            "content": e["item"]["content"],
+            "is_private": e["item"]["is_private"],
+            "date": e["item"]["date"],
+            "author_name": (e["item"].get("user") or {}).get("name"),
+        }
+        for e in entries
+    ]
+
+
+@mcp.tool()
+def assign_self(ticket_id: int) -> dict:
+    """Assign hermes-bot itself to a ticket, taking visible ownership of
+    it. Use this when replying with a confident, resolving answer."""
+    user_id = glpi.resolve_user_id(GLPI_USER)
+    return glpi.request(
+        "POST",
+        f"/Assistance/Ticket/{ticket_id}/TeamMember",
+        json={"type": "User", "id": user_id, "role": "assigned"},
+    )
+
+
+@mcp.tool()
+def escalate_ticket(ticket_id: int, reason: str) -> dict:
+    """Hand a ticket off to a human technician: assign the configured
+    escalation user and leave an internal note explaining why. Use this
+    whenever the ticket needs human judgment instead of another guess."""
+    user_id = glpi.resolve_user_id(ESCALATION_USER)
+    assignment = glpi.request(
+        "POST",
+        f"/Assistance/Ticket/{ticket_id}/TeamMember",
+        json={"type": "User", "id": user_id, "role": "assigned"},
+    )
+    glpi.request(
+        "POST",
+        f"/Assistance/Ticket/{ticket_id}/Timeline/Followup",
+        json={"content": reason, "is_private": True},
+    )
+    return assignment
 
 
 if __name__ == "__main__":

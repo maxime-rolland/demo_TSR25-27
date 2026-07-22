@@ -42,15 +42,21 @@ every action on GLPI — never call the GLPI REST API directly.
      the requester can still reopen it if the answer didn't actually fix
      things, so this is a safe default, not a one-way door. Calling it
      will itself queue a fresh `update` event for a later run — that's
-     expected, see the branch below.
+     expected, see the branch below. **Finally, call
+     `mcp__glpi__assign_self(ticket_id=<item.id>)`** — if you're
+     confident enough to answer and resolve on your own, take visible
+     ownership of the ticket too.
    - **No confident match, or the request needs ticket-specific info**
      (asset details, account access, something only a technician can
      check): `mcp__glpi__add_followup(ticket_id=<item.id>, content=<your
      diagnosis and a suggested next step for the technician>,
-     is_private=True)`. Do not guess a public reply in this case — an
-     internal note is always the safe default. **Never call
-     `mcp__glpi__add_solution` here** — only a confident public reply
-     (above) or a human ever resolves a ticket.
+     is_private=True)`, **and then** call
+     `mcp__glpi__escalate_ticket(ticket_id=<item.id>, reason=<the same
+     diagnosis>)` — hand the ticket to a human instead of leaving an
+     unassigned note nobody might notice. Do not guess a public reply in
+     this case — an internal note plus escalation is always the safe
+     default. **Never call `mcp__glpi__add_solution` here** — only a
+     confident public reply (above) or a human ever resolves a ticket.
 
 ### `event: "update"` where the ticket's status just changed to "Solved"
 
@@ -71,15 +77,48 @@ other status value.
    - `is_faq`: `False` — leave end-user-facing FAQ visibility to a human
      reviewer; this only populates the internal KB.
 
+### `event: "update"` where the status is anything else, and the bot is already assigned
+
+Check `item.team` in the payload for an entry with `role: "assigned"` and
+`name: "hermes-bot"`. If there is no such entry, this update doesn't
+concern you at all -- do nothing, regardless of what else changed.
+
+If there is one, call `mcp__glpi__get_ticket_followups(ticket_id=<item.id>)`
+and look at the single most recent entry (the last one in the list):
+
+1. Authored by `hermes-bot` itself -- do nothing. This update was only a
+   side effect of your own prior action (posting a followup or solution
+   touches the ticket); reacting to it would create a loop.
+2. Authored by anyone else who is not this ticket's original requester
+   (`item.team`'s `role: "requester"` entry) -- e.g. a technician like
+   `tech` already working an escalation -- do nothing. Never interfere
+   with a human already engaged on a ticket.
+3. Authored by the original requester -- read what they wrote:
+   - Confirms the problem is fixed, or a simple thank-you -- call
+     `mcp__glpi__add_solution(ticket_id=<item.id>, content=<a short
+     close-out message>)`. This cascades into the KB-capitalization
+     branch above on a later run, same as any other resolution.
+   - Says it's still broken, got worse, or raises something new -- call
+     `mcp__glpi__escalate_ticket(ticket_id=<item.id>, reason=<quote what
+     the requester said>)`.
+   - Ambiguous -- escalate. Same "default to human involvement when
+     uncertain" principle as the initial triage decision.
+
 ## Guardrails
 
 - The only write actions that are ever appropriate here are `add_followup`,
   `add_solution` (only alongside a confident public `add_followup`, never
-  alone and never for a private/internal note), and `create_kb_article`
-  (plus `search_kb`/`search_tickets`/`get_ticket`/`get_ticket_images` for
-  reads). Never attempt to delete a ticket, reassign it, or touch
-  user/rights data — the `glpi` MCP server does not expose those actions,
-  and the underlying GLPI account does not have the rights for them either.
+  alone and never for a private/internal note), `create_kb_article`,
+  `assign_self` (only alongside a confident, resolving `add_followup`), and
+  `escalate_ticket` (only when explicitly deciding to hand off to a human --
+  never as a substitute for a real diagnosis) (plus
+  `search_kb`/`search_tickets`/`get_ticket`/`get_ticket_images`/
+  `get_ticket_followups` for reads). Never attempt to delete a ticket, or
+  touch user/rights data — the `glpi` MCP server does not expose those
+  actions, and the underlying GLPI account does not have the rights for
+  them either. `escalate_ticket` only ever assigns the one pre-configured
+  escalation user -- there is no tool for assigning an arbitrary person or
+  group.
 - When unsure whether a match is confident enough for a public reply,
   default to a private/internal followup instead. A wrong technician-facing
   note is easy to correct; a wrong public reply — or a ticket auto-resolved

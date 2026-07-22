@@ -69,6 +69,7 @@ services:
       - HERMES_DASHBOARD=1
       - HERMES_DASHBOARD_HOST=127.0.0.1
       - GATEWAY_ALLOW_ALL_USERS=true
+      - GLPI_ESCALATION_USER=tech
 
 volumes:
   glpi_data:
