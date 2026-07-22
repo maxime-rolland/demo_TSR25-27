@@ -21,22 +21,29 @@ every action on GLPI — never call the GLPI REST API directly.
 
 1. Read the ticket's `name` (title) and `content` (description) from the
    payload.
-2. Call `mcp__glpi__search_kb` with an RSQL filter built from the ticket's key
-   terms, e.g. `name=like="*<keyword>*"`. If that returns nothing, also try
-   `content=like="*<keyword>*"`.
-3. Decide:
+2. Call `mcp__glpi__get_ticket_images(ticket_id=<item.id>)` — always, even
+   if nothing in the ticket text mentions an attachment. If it returns any
+   images, look at them before continuing: an error message, a code, or
+   other visual context in a screenshot often matters more than the
+   ticket's own written description. Non-image attachments (PDF, Word,
+   etc.) are not supported yet and won't appear here.
+3. Call `mcp__glpi__search_kb` with an RSQL filter built from the ticket's
+   key terms, e.g. `name=like="*<keyword>*"`. If that returns nothing, also
+   try `content=like="*<keyword>*"`.
+4. Decide:
    - **Confident match** — the KB article clearly answers this exact
      request, not just a loosely related topic: reply directly with
-     `mcp__glpi__add_followup(ticket_id=<item.id>, content=<answer drawn from
-     the KB article>, is_private=False)`.
-   - **No confident match, or the request needs ticket-specific info** (asset
-     details, account access, something only a technician can check):
-     `mcp__glpi__add_followup(ticket_id=<item.id>, content=<your diagnosis and
-     a suggested next step for the technician>, is_private=True)`. Do not
-     guess a public reply in this case — an internal note is always the safe
-     default.
-4. Never call `mcp__glpi__add_solution` or otherwise resolve/close the ticket
-   in this step — only a human, or the resolution step below, does that.
+     `mcp__glpi__add_followup(ticket_id=<item.id>, content=<answer drawn
+     from the KB article>, is_private=False)`.
+   - **No confident match, or the request needs ticket-specific info**
+     (asset details, account access, something only a technician can
+     check): `mcp__glpi__add_followup(ticket_id=<item.id>, content=<your
+     diagnosis and a suggested next step for the technician>,
+     is_private=True)`. Do not guess a public reply in this case — an
+     internal note is always the safe default.
+5. Never call `mcp__glpi__add_solution` or otherwise resolve/close the
+   ticket in this step — only a human, or the resolution step below, does
+   that.
 
 ### `event: "update"` where the ticket's status just changed to "Solved"
 

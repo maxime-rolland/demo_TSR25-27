@@ -137,5 +137,75 @@ class ToolTests(unittest.TestCase):
         )
 
 
+class GLPIClientRawModeTests(unittest.TestCase):
+    def setUp(self):
+        self.client = server.GLPIClient()
+        self.client._access_token = "tok-1"
+        self.client._expires_at = server.time.time() + 3600
+
+    @patch("server.requests.request")
+    def test_raw_mode_returns_bytes_without_parsing_json(self, mock_request):
+        resp = MagicMock()
+        resp.content = b"\x89PNG raw bytes, not json"
+        resp.raise_for_status.return_value = None
+        mock_request.return_value = resp
+
+        result = self.client.request(
+            "GET", "/Management/Document/1/Download", raw=True
+        )
+
+        self.assertEqual(result, b"\x89PNG raw bytes, not json")
+        resp.json.assert_not_called()
+
+
+class GetTicketImagesTests(unittest.TestCase):
+    @patch.object(server.glpi, "request")
+    def test_filters_to_images_and_downloads_each(self, mock_request):
+        mock_request.side_effect = [
+            [
+                {"id": 10, "mime": "image/png", "filename": "screenshot.png"},
+                {"id": 11, "mime": "application/pdf", "filename": "manual.pdf"},
+                {"id": 12, "mime": "image/jpeg", "filename": "photo.jpg"},
+            ],
+            b"PNGDATA",
+            b"JPGDATA",
+        ]
+
+        images = server.get_ticket_images(42)
+
+        self.assertEqual(len(images), 2)
+        self.assertEqual(images[0].data, b"PNGDATA")
+        self.assertEqual(images[1].data, b"JPGDATA")
+        mock_request.assert_any_call(
+            "GET", "/Assistance/Ticket/42/Timeline/Document"
+        )
+        mock_request.assert_any_call(
+            "GET", "/Management/Document/10/Download", raw=True
+        )
+        mock_request.assert_any_call(
+            "GET", "/Management/Document/12/Download", raw=True
+        )
+
+    @patch.object(server.glpi, "request")
+    def test_caps_at_five_images(self, mock_request):
+        docs = [
+            {"id": i, "mime": "image/png", "filename": f"img{i}.png"}
+            for i in range(8)
+        ]
+        mock_request.side_effect = [docs] + [b"DATA"] * 8
+
+        images = server.get_ticket_images(42)
+
+        self.assertEqual(len(images), 5)
+
+    @patch.object(server.glpi, "request")
+    def test_no_documents_returns_empty_list(self, mock_request):
+        mock_request.return_value = []
+
+        images = server.get_ticket_images(42)
+
+        self.assertEqual(images, [])
+
+
 if __name__ == "__main__":
     unittest.main()

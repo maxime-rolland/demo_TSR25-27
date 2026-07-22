@@ -11,7 +11,7 @@ import os
 import time
 
 import requests
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 
 API_URL = os.environ["GLPI_API_URL"].rstrip("/")
 CLIENT_ID = os.environ["GLPI_OAUTH_CLIENT_ID"]
@@ -74,7 +74,7 @@ class GLPIClient:
                 pass
         self._password_grant()
 
-    def request(self, method, path, **kwargs):
+    def request(self, method, path, raw=False, **kwargs):
         self._ensure_token()
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {self._access_token}"
@@ -82,6 +82,8 @@ class GLPIClient:
             method, f"{API_URL}{path}", headers=headers, timeout=15, **kwargs
         )
         resp.raise_for_status()
+        if raw:
+            return resp.content
         if resp.content:
             return resp.json()
         return None
@@ -142,6 +144,30 @@ def create_kb_article(name: str, content: str, is_faq: bool = False) -> dict:
         "/Knowledgebase/Article",
         json={"name": name, "content": content, "is_faq": is_faq},
     )
+
+
+MAX_IMAGES_PER_TICKET = 5
+
+
+@mcp.tool()
+def get_ticket_images(ticket_id: int) -> list:
+    """Fetch image attachments (screenshots/photos) linked to a ticket, as
+    viewable images. Non-image documents (PDF, Word, etc.) are not
+    supported yet and are skipped. Capped at the first 5 image
+    attachments found on the ticket."""
+    docs = glpi.request("GET", f"/Assistance/Ticket/{ticket_id}/Timeline/Document")
+    images = []
+    for doc in docs:
+        mime = doc.get("mime") or ""
+        if not mime.startswith("image/"):
+            continue
+        data = glpi.request(
+            "GET", f"/Management/Document/{doc['id']}/Download", raw=True
+        )
+        images.append(Image(data=data, format=mime.split("/")[-1]))
+        if len(images) >= MAX_IMAGES_PER_TICKET:
+            break
+    return images
 
 
 if __name__ == "__main__":
